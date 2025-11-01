@@ -74,12 +74,10 @@
         }
         
         /* Applying Text Colors via Tailwind/Variables */
-        .text-3xl.font-extrabold { color: var(--color-text-header); }
-        .text-xl.font-bold { color: var(--color-text-header); }
-        .border-b, .border-t { border-color: var(--color-border); }
-        .text-gray-500 { color: var(--color-text-muted); }
+        .text-3xl.font-extrabold, .text-xl.font-bold { color: var(--color-text-header); }
+        .border-b, .border-t, .border { border-color: var(--color-border); }
+        .text-gray-500, .text-gray-600 { color: var(--color-text-muted); }
         #statusText { color: var(--color-status-text) !important; }
-        .text-gray-600 { color: var(--color-text-muted); }
         .bg-gray-100 { background-color: var(--color-border); color: var(--color-text-header); }
         
         /* Dark mode specific override for light status text */
@@ -114,31 +112,43 @@
         <p class="text-gray-500 text-sm">Your ID (full string): <span id="userIdDisplay" class="font-mono bg-gray-100 px-1 rounded">Loading...</span></p>
     </div>
 
-    <!-- Readiness and Sync Controls -->
+    <!-- Group Control and Readiness -->
     <div class="flex flex-col sm:flex-row space-y-4 sm:space-y-0 sm:space-x-4">
         
         <!-- READY STATUS DISPLAY -->
         <div class="flex-grow bg-blue-50 dark:bg-blue-900 border border-blue-200 dark:border-blue-700 text-blue-700 dark:text-blue-300 px-4 py-3 rounded-lg shadow-inner flex items-center justify-between">
             <span class="font-semibold text-sm sm:text-base">Online Users / Ready:</span>
-            <!-- This span already displays the count: Ready: {readyCount} / {totalActiveUsers} -->
             <span id="readyStatus" class="text-lg font-extrabold">Ready: 0 / 0</span>
         </div>
 
-        <!-- READY BUTTON (onclick removed) -->
+        <!-- READY BUTTON -->
         <button id="readyButton" class="control-button bg-green-500 text-white hover:bg-green-600 dark:hover:bg-green-700 w-full sm:w-auto flex-shrink-0">
             I am Ready
         </button>
+        
+    </div>
+    
+    <!-- Explicit Stop Control -->
+    <div class="mt-4">
+        <button 
+            id="stopButton"
+            class="control-button bg-red-500 text-white hover:bg-red-600 dark:hover:bg-red-700 w-full flex items-center justify-center"
+        >
+            <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+            STOP Video for Everyone
+        </button>
+        <p class="text-xs text-gray-500 mt-2 italic text-center">This pauses and synchronizes the video state for all viewers.</p>
     </div>
 
     <!-- Synchronization Controls (Host Use) -->
     <div class="mt-6 pt-4 border-t">
-        <h2 class="text-xl font-bold text-gray-700 mb-3">Sync Management (Host Use)</h2>
+        <h2 class="text-xl font-bold text-gray-700 mb-3">Host Controls (Manual Sync)</h2>
         <div class="flex flex-col space-y-3 sm:flex-row sm:space-y-0 sm:space-x-4">
             <button 
                 id="syncButton"
                 class="control-button bg-blue-500 text-white hover:bg-blue-600 dark:hover:bg-blue-700 w-full"
             >
-                Synchronize (Send Current State)
+                Manual Sync (Send Current Time/State)
             </button>
             <button 
                 id="resetButton"
@@ -147,7 +157,7 @@
                 Reset to Start (0:00)
             </button>
         </div>
-        <p class="text-xs text-gray-500 mt-2 italic">Note: Synchronization will be automatically sent when you hit Play/Pause.</p>
+        <p class="text-xs text-gray-500 mt-2 italic">Note: The Play/Pause controls now only send sync signals, they don't auto-start based on readiness.</p>
     </div>
 
     <div class="mt-6 pt-4 border-t">
@@ -164,7 +174,7 @@
 <script type="module">
     // Renaming the Firebase SDK function to avoid collision
     import { initializeApp as initializeFirebaseApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-    import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+    import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
     import { getFirestore, doc, setDoc, onSnapshot, collection, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
     
     // --- Global State and Constants ---
@@ -172,15 +182,14 @@
     const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
     
     // Fallback for external environments (MUST be updated by the user for external hosting)
-        const EXTERNAL_FIREBASE_CONFIG = {
-    apiKey: "AIzaSyC7eitj-tb2mHofXyJEHaegvNu_7EgXxxw",
-    authDomain: "audiobookschoolofarhuron.firebaseapp.com",
-    projectId: "audiobookschoolofarhuron",
-    storageBucket: "audiobookschoolofarhuron.firebasestorage.app",
-    messagingSenderId: "771527529225",
-    appId: "1:771527529225:web:4f46a5bcc8008582e579d8"
+    const EXTERNAL_FIREBASE_CONFIG = {
+        apiKey: "AIzaSyC7eitj-tb2mHofXyJEHaegvNu_7EgXxxw",
+        authDomain: "audiobookschoolofarhuron.firebaseapp.com",
+        projectId: "audiobookschoolofarhuron",
+        storageBucket: "audiobookschoolofarhuron.firebasestorage.app",
+        messagingSenderId: "771527529225",
+        appId: "1:771527529225:web:4f46a5bcc8008582e579d8"
     };
-
 
     const configToUse = firebaseConfig || EXTERNAL_FIREBASE_CONFIG;
     
@@ -213,6 +222,9 @@
         if (document.body.classList.contains('dark') && isError) {
              statusText.classList.remove('text-red-600');
              statusText.classList.add('text-red-400');
+        } else if (!isError) {
+             statusText.classList.remove('text-green-600');
+             statusText.classList.add('text-green-500'); // Ensure status text is clearly visible in light mode
         }
     }
     
@@ -258,14 +270,12 @@
             db = getFirestore(app);
             auth = getAuth(app);
 
-            // Attempt to sign in anonymously
-            // NOTE: Anonymous sign-in MUST be enabled in the Firebase Console
+            // Set up Auth Listener
+            await auth.signOut(); // Ensure fresh state if environment reloads without full clear
             await signInAnonymously(auth);
             
-            // Set up Auth Listener
-            onAuthStateChanged(auth, (user) => {
+            auth.onAuthStateChanged((user) => {
                 if (user) {
-                    // Successfully authenticated
                     userId = user.uid;
                     getElement('userIdDisplay').textContent = userId; 
                     logStatus(`Authenticated: User ID ${userId.substring(0, 8)}...`);
@@ -276,7 +286,6 @@
                     listenToReadyStatus();
                     
                 } else {
-                    // Failed to authenticate or user signed out
                     logStatus("Authentication failed. Check Firebase console for Anonymous Sign-in status.", true);
                 }
             });
@@ -286,7 +295,6 @@
     }
 
     function setupFirestoreReferences() {
-        // Guard to ensure auth.currentUser is available
         if (!auth.currentUser) return; 
 
         const playerStateDocPath = `artifacts/${appId}/public/data/audiobook_player_state/state`;
@@ -303,7 +311,7 @@
     /** Updates the current user's lastSeen timestamp and isReady status. */
     function monitorUserPresence() {
         const updatePresence = () => {
-            if (!currentUserRef) return; // Guard against call before auth is complete
+            if (!currentUserRef) return; 
             setDoc(currentUserRef, {
                 isReady: isReady,
                 lastSeen: serverTimestamp()
@@ -311,38 +319,31 @@
             .catch(err => console.error("Error updating user presence:", err));
         };
 
-        // CRITICAL FIX: Update presence immediately upon connection
         updatePresence(); 
-        // Then, set interval to keep the user marked as active
         setInterval(updatePresence, INACTIVITY_TIMEOUT_MS / 3); 
     }
 
     /** Listens to all user documents to calculate total active and ready users. */
     function listenToReadyStatus() {
-        // Define the time limit for a user to be considered "online"
         const cutoff = new Date(Date.now() - INACTIVITY_TIMEOUT_MS);
         
         onSnapshot(usersRef, (snapshot) => {
             let readyCount = 0;
             let totalActiveUsers = 0;
+            const currentUserId = auth.currentUser ? auth.currentUser.uid : null;
             
             snapshot.forEach(userDoc => {
                 const data = userDoc.data();
-                
-                // Get the current user ID
-                const currentUserId = auth.currentUser ? auth.currentUser.uid : null;
-
-                // FIX: Check if the current user is active first, if not, count them if the data is stale
                 let isUserActive = false;
                 
-                // If we have a timestamp, use it to check for recent activity
+                // 1. Check if the user has been seen recently
                 if (data.lastSeen) {
                     const lastSeenMs = data.lastSeen.toMillis();
                     if (lastSeenMs >= cutoff.getTime()) {
                         isUserActive = true;
                     }
                 } 
-                // If the user is the current user and their document exists, assume active initially until the timestamp syncs
+                // 2. If no timestamp, count the current user to ensure 1/1 visibility
                 else if (userDoc.id === currentUserId) {
                     isUserActive = true; 
                 }
@@ -360,12 +361,12 @@
             // Update the ready status display
             getElement('readyStatus').textContent = `Ready: ${readyCount} / ${totalActiveUsers}`;
 
-            // Auto-start condition
+            // --- STRICT READY-START LOGIC ---
             if (totalActiveUsers > 0 && readyCount >= requiredReadyCount) {
-                // We must check player state to prevent an infinite loop of setting state
+                // If the ready threshold is met, send the PLAY signal
                 if (player && player.getPlayerState() !== YT.PlayerState.PLAYING) { 
-                    logStatus(`START CONDITION MET! Initiating video playback for all ${totalActiveUsers} users.`);
-                    // Send the PLAY signal to Firestore
+                    logStatus(`Ready threshold met: Initiating video playback!`);
+                    // Send the PLAY signal
                     syncPlayerState(true, player.getCurrentTime() || 0); 
                 }
             } else {
@@ -398,7 +399,6 @@
             readyBtn.classList.add('bg-green-500', 'hover:bg-green-600', 'dark:hover:bg-green-700');
         }
         
-        // Immediately update the remote status
         setDoc(currentUserRef, { isReady: isReady }, { merge: true })
             .catch(err => logError("Failed to update ready status:", err));
     }
@@ -425,7 +425,7 @@
     }
 
     function setupFirestoreListener() {
-        if (!playerStateRef) return; // Guard against call before auth is complete
+        if (!playerStateRef) return; 
 
         onSnapshot(playerStateRef, (docSnapshot) => {
             if (docSnapshot.exists()) {
@@ -477,7 +477,7 @@
             width: '640',
             videoId: 'MF58C9JJhJk', 
             playerVars: {
-                'controls': 0, 
+                'controls': 0, // IMPORTANT: Controls are now hidden to enforce app-level synchronization
                 'disablekb': 1, 
                 'modestbranding': 1,
                 'rel': 0, 
@@ -496,6 +496,10 @@
         logStatus("YouTube Player is Ready. Awaiting Firebase connection...");
     }
 
+    /** * Handles state changes from the local player (e.g., user clicked play/pause on the video frame).
+     * This now sends a sync signal ONLY if the state is Play or Pause.
+     * The auto-start logic is strictly handled by listenToReadyStatus.
+     */
     function onPlayerStateChange(event) {
         if (!auth || !auth.currentUser) return; 
         
@@ -503,6 +507,7 @@
         const isPlaying = event.data === YT.PlayerState.PLAYING;
         const isPaused = event.data === YT.PlayerState.PAUSED;
 
+        // Only sync if the state is explicitly PLAYING or PAUSED due to a user interaction
         if (isPlaying || isPaused) {
             syncPlayerState(isPlaying, currentTime);
         }
@@ -521,7 +526,20 @@
         syncPlayerState(isPlaying, currentTime);
     }
     
-    // 2. Resets and synchronizes to time 0
+    // 2. Forces the player to stop/pause for everyone
+    function stopPlayerState() {
+        if (!player || !player.pauseVideo) {
+            logStatus("Player not ready to stop.", true);
+            return;
+        }
+        // Pause locally
+        player.pauseVideo();
+        // Send PAUSED state to Firestore
+        syncPlayerState(false, player.getCurrentTime() || 0);
+        logStatus("Video forcefully stopped and synchronized for all users.");
+    }
+    
+    // 3. Resets and synchronizes to time 0
     function resetPlayerState() {
         if (!player || !player.seekTo) {
             logStatus("Player API is not fully ready for seeking (Reset failed).", true);
@@ -529,23 +547,24 @@
         }
         player.seekTo(0, true); 
         syncPlayerState(false, 0);
+        logStatus("Video reset to 0:00 and paused.");
     }
     
-    // --- Global exposure and Event Binding (Fixes ReferenceErrors) ---
+    // --- Global exposure and Event Binding ---
     
-    // Expose functions globally for manual calls
     window.toggleReady = toggleReady;
     window.sendCurrentState = sendCurrentState; 
+    window.stopPlayerState = stopPlayerState; // Exposed stop function
     window.resetPlayerState = resetPlayerState;
-    window.toggleDarkMode = toggleDarkMode; // Expose for the button
+    window.toggleDarkMode = toggleDarkMode; 
 
     // Attach listeners after the DOM is ready to ensure the elements and functions exist
     document.addEventListener('DOMContentLoaded', () => {
-        // Dark Mode Initialization must happen before other scripts run
         initializeDarkMode(); 
 
         getElement('readyButton')?.addEventListener('click', window.toggleReady);
         getElement('syncButton')?.addEventListener('click', window.sendCurrentState);
+        getElement('stopButton')?.addEventListener('click', window.stopPlayerState); // New Stop button listener
         getElement('resetButton')?.addEventListener('click', window.resetPlayerState);
         getElement('darkModeToggle')?.addEventListener('click', window.toggleDarkMode);
     });
