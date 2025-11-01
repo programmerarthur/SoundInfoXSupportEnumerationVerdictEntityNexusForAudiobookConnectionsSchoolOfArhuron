@@ -6,20 +6,16 @@
     <title>Synchronized Audiobook Player</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        // Renaming the Firebase SDK function to avoid collision
+        import { initializeApp as initializeFirebaseApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, getDoc, setDoc, onSnapshot, collection, query, serverTimestamp, runTransaction, getDocs, where, limit, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, setDoc, onSnapshot, collection, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         
         // --- Firebase Configuration ---
-        // The __firebase_config and __app_id variables are automatically provided 
-        // when running within the Canvas/Immersive environment.
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
         
-        // --- ⚠️ IMPORTANT: FOR EXTERNAL HOSTING (like GitHub Pages) ⚠️ ---
-        // You MUST replace the placeholder values in EXTERNAL_FIREBASE_CONFIG below 
-        // with your actual Firebase Project credentials (get them from the Firebase Console).
-        // NOTE: The user has indicated that they have provided the correct keys for their deployment.
+        // Note: EXTERNAL_FIREBASE_CONFIG remains for external hosting compatibility.
         const EXTERNAL_FIREBASE_CONFIG = {
         apiKey: "AIzaSyC7eitj-tb2mHofXyJEHaegvNu_7EgXxxw",
         authDomain: "audiobookschoolofarhuron.firebaseapp.com",
@@ -41,9 +37,9 @@
         let usersRef;
         let currentUserRef;
 
-        let isReady = false; // Local state for the ready button
-        const READY_THRESHOLD_PERCENTAGE = 0.5; // 50% required
-        const INACTIVITY_TIMEOUT_MS = 15000; // 15 seconds for presence heartbeat
+        let isReady = false; 
+        const READY_THRESHOLD_PERCENTAGE = 0.5; 
+        const INACTIVITY_TIMEOUT_MS = 15000; 
 
         // --- Utility Functions ---
         function getElement(id) {
@@ -52,7 +48,6 @@
 
         function logError(message) {
             console.error(message);
-            // Instead of using alert(), update the UI with a custom message box
             const messageBox = getElement('messageBox');
             messageBox.innerHTML = `<div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-4" role="alert">${message}</div>`;
         }
@@ -66,32 +61,28 @@
                 : 'text-green-600 font-semibold';
         }
 
-        // --- Firebase Initialization and Authentication ---
-
-        async function initializeApp() {
-            // Check if configuration is valid (specifically looking for the placeholder to trigger error)
+        // --- Firebase Initialization and Authentication (Custom Function) ---
+        // RENAMED from initializeApp to initializeAppAndAuth to resolve SyntaxError
+        async function initializeAppAndAuth() {
             if (!configToUse || !configToUse.projectId || configToUse.projectId.includes("YOUR_PASTED")) {
                 logError("CRITICAL: Firebase configuration is missing or invalid. Please update EXTERNAL_FIREBASE_CONFIG.");
                 return;
             }
 
             try {
-                app = initializeApp(configToUse);
+                // Use the renamed imported function
+                app = initializeFirebaseApp(configToUse); 
                 db = getFirestore(app);
                 auth = getAuth(app);
 
-                // Sign in anonymously if no custom token is provided
-                // This ensures we always have a userId
                 await signInAnonymously(auth);
                 
                 onAuthStateChanged(auth, (user) => {
                     if (user) {
                         userId = user.uid;
-                        // Display the full ID immediately upon successful auth
                         getElement('userIdDisplay').textContent = userId; 
                         logStatus(`Authenticated: User ID ${userId.substring(0, 8)}...`);
                         
-                        // Set up Firestore references and listeners
                         setupFirestoreReferences();
                         setupFirestoreListener();
                         monitorUserPresence(); 
@@ -108,15 +99,12 @@
         }
 
         function setupFirestoreReferences() {
-            // Document for synchronization state (Public Data)
             const playerStateDocPath = `artifacts/${appId}/public/data/audiobook_player_state/state`;
             playerStateRef = doc(db, playerStateDocPath);
 
-            // Collection for tracking user presence and readiness (Public Data)
             const usersCollectionPath = `artifacts/${appId}/public/data/audiobook_users`;
             usersRef = collection(db, usersCollectionPath);
             
-            // Document for the current user's presence/ready status
             currentUserRef = doc(db, usersCollectionPath, auth.currentUser.uid);
         }
 
@@ -134,9 +122,7 @@
                 .catch(err => console.error("Error updating user presence:", err));
             };
 
-            // Initial write
             updatePresence(); 
-            // Heartbeat update every few seconds
             setInterval(updatePresence, INACTIVITY_TIMEOUT_MS / 3); 
         }
 
@@ -144,13 +130,7 @@
          * Listens to all user documents to calculate total active and ready users.
          */
         function listenToReadyStatus() {
-            // Calculate cutoff timestamp for active users (now - timeout)
             const cutoff = new Date(Date.now() - INACTIVITY_TIMEOUT_MS);
-            
-            // Query users who have been seen recently
-            // Note: Firestore doesn't allow 'where' queries on serverTimestamp fields directly for dynamic checks
-            // So we'll fetch the whole collection and filter/sort client-side for "lastSeen"
-            // For simplicity and to avoid index issues, we listen to all user docs and filter by the timestamp client-side.
             
             onSnapshot(usersRef, (snapshot) => {
                 const activeUsers = [];
@@ -160,7 +140,6 @@
                     const data = userDoc.data();
                     const lastSeenMs = data.lastSeen ? data.lastSeen.toMillis() : 0;
                     
-                    // Filter: Only count users seen in the last 15 seconds
                     if (lastSeenMs >= cutoff.getTime()) {
                         activeUsers.push(userDoc.id);
                         if (data.isReady) {
@@ -172,14 +151,19 @@
                 const totalActiveUsers = activeUsers.length;
                 const requiredReadyCount = Math.ceil(totalActiveUsers * READY_THRESHOLD_PERCENTAGE);
                 
-                // Update UI display
                 getElement('readyStatus').textContent = `Ready: ${readyCount} / ${totalActiveUsers}`;
 
                 // Check for start condition
                 if (totalActiveUsers > 0 && readyCount >= requiredReadyCount) {
                     if (player && player.getPlayerState() !== YT.PlayerState.PLAYING) {
                         logStatus(`START CONDITION MET! Initiating video playback for all ${totalActiveUsers} users.`);
-                        syncPlayerState(true, player.getCurrentTime());
+                        // Check for player method existence before calling
+                        if (player.playVideo) {
+                             // Use player's current time to sync from start time (0)
+                             syncPlayerState(true, player.getCurrentTime() || 0); 
+                        } else {
+                            logStatus("Player not ready to play video.", true);
+                        }
                     }
                 } else {
                     const needed = Math.max(0, requiredReadyCount - readyCount);
@@ -194,6 +178,7 @@
 
         /**
          * Toggles the current user's local and remote readiness status.
+         * Exposed globally via window.toggleReady
          */
         function toggleReady() {
             if (!currentUserRef) {
@@ -202,7 +187,6 @@
             }
             isReady = !isReady;
             
-            // Update local button appearance
             const readyBtn = getElement('readyButton');
             if (isReady) {
                 readyBtn.textContent = 'Unready';
@@ -214,7 +198,6 @@
                 readyBtn.classList.add('bg-green-500', 'hover:bg-green-600');
             }
             
-            // Immediately update the remote status
             setDoc(currentUserRef, { isReady: isReady }, { merge: true })
                 .catch(err => logError("Failed to update ready status:", err));
         }
@@ -222,6 +205,10 @@
 
         // --- Player State Synchronization ---
 
+        /**
+         * Sends player state (playing/paused and current time) to Firestore.
+         * Exposed globally via window.syncPlayerState
+         */
         function syncPlayerState(isPlaying, currentTime) {
             try {
                 setDoc(playerStateRef, {
@@ -239,35 +226,30 @@
             onSnapshot(playerStateRef, (docSnapshot) => {
                 if (docSnapshot.exists()) {
                     const data = docSnapshot.data();
-                    if (!player) return;
+                    if (!player || !player.getPlayerState) return;
 
                     const playerState = player.getPlayerState();
                     const localTime = player.getCurrentTime();
                     
                     if (data.isPlaying) {
-                        // If remote says PLAY
                         if (playerState !== YT.PlayerState.PLAYING && playerState !== YT.PlayerState.BUFFERING) {
-                            player.playVideo();
+                            if (player.playVideo) player.playVideo();
                             logStatus(`Remote signal: Playing video.`);
                         }
                     } else {
-                        // If remote says PAUSE
                         if (playerState !== YT.PlayerState.PAUSED) {
-                            player.pauseVideo();
+                            if (player.pauseVideo) player.pauseVideo();
                             logStatus(`Remote signal: Pausing video.`);
                         }
                     }
 
                     // Seek synchronization (Tolerance for drift: 1 second)
-                    // The player.seekTo method is being called before the player object is guaranteed to be fully initialized 
-                    // or YT API methods are ready. The previous error was a result of this timing.
                     if (player.seekTo && Math.abs(localTime - data.currentTime) > 1.0) {
                         player.seekTo(data.currentTime, true);
                         logStatus(`Remote signal: Seeking to ${data.currentTime.toFixed(2)}s.`);
                     }
                 } else {
                     logStatus("Firestore state document does not exist. Initializing state...");
-                    // Initialize the state if it doesn't exist
                     setDoc(playerStateRef, { 
                         isPlaying: false, 
                         currentTime: 0, 
@@ -285,17 +267,17 @@
 
         window.onYouTubeIframeAPIReady = function() {
             ytPlayerReady = true;
-            initializeApp(); // Initialize Firebase after YT API is ready
+            initializeAppAndAuth(); // Call the renamed initialization function
             
             player = new YT.Player('player', {
                 height: '390',
                 width: '640',
-                videoId: 'MF58C9JJhJk', // <-- NEW VIDEO ID IS SET HERE
+                videoId: 'MF58C9JJhJk', 
                 playerVars: {
-                    'controls': 0, // Custom controls
-                    'disablekb': 1, // Disable keyboard controls
+                    'controls': 0, 
+                    'disablekb': 1, 
                     'modestbranding': 1,
-                    'rel': 0, // No related videos
+                    'rel': 0, 
                     'showinfo': 0,
                     'enablejsapi': 1,
                     'origin': window.location.origin
@@ -309,34 +291,38 @@
 
         function onPlayerReady(event) {
             logStatus("YouTube Player is Ready. Awaiting Firebase connection...");
-            // Hide the default play button overlay if it exists
             const playerOverlay = getElement('playerOverlay');
             if (playerOverlay) playerOverlay.style.display = 'none';
         }
 
         function onPlayerStateChange(event) {
-            if (!auth || !auth.currentUser) return; // Ignore events if not authenticated
+            if (!auth || !auth.currentUser) return; 
             
             const currentTime = player.getCurrentTime();
             const isPlaying = event.data === YT.PlayerState.PLAYING;
             const isPaused = event.data === YT.PlayerState.PAUSED;
 
             if (isPlaying) {
-                // When playing, sync state (assuming the ready check already passed if it's external)
-                // We always sync the state to Firestore when the player starts/stops
                 syncPlayerState(true, currentTime);
             } else if (isPaused) {
-                // When paused, sync state
                 syncPlayerState(false, currentTime);
             }
-            
-            // Note: Seeking (YT.PlayerState.BUFFERING) is often ignored to prevent sync loops.
         }
 
         // --- Global functions for buttons ---
-        // FIX: Attach functions to the window object to make them accessible via HTML onclick attributes
+        // CRITICAL FIX: Expose functions to the global window object for HTML onclick to work
         window.toggleReady = toggleReady;
         window.syncPlayerState = syncPlayerState; 
+        
+        // Helper function for the Reset button to handle the seekTo TypeError gracefully
+        window.resetPlayerState = function() {
+            if (player && player.seekTo) {
+                player.seekTo(0, true); 
+                syncPlayerState(false, 0);
+            } else {
+                logStatus("Player API is not fully ready for seeking.", true);
+            }
+        }
 
         // Load the YouTube IFrame API asynchronously
         (function() {
@@ -345,8 +331,6 @@
             var firstScriptTag = document.getElementsByTagName('script')[0];
             firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
         })();
-
-        // Start Firebase initialization sequence when the YT API is ready (in window.onYouTubeIframeAPIReady)
 
     </script>
     <style>
@@ -429,13 +413,13 @@
         <h2 class="text-xl font-bold text-gray-700 mb-3">Sync Management (Host Use)</h2>
         <div class="flex flex-col space-y-3 sm:flex-row sm:space-y-0 sm:space-x-4">
             <button 
-                onclick="syncPlayerState(player.getPlayerState() === YT.PlayerState.PLAYING, player.getCurrentTime())" 
+                onclick="syncPlayerState(player && player.getPlayerState() === YT.PlayerState.PLAYING, player ? player.getCurrentTime() : 0)" 
                 class="control-button bg-blue-500 text-white hover:bg-blue-600 w-full"
             >
                 Synchronize (Send Current State)
             </button>
             <button 
-                onclick="player.seekTo(0, true); syncPlayerState(false, 0);" 
+                onclick="resetPlayerState()" 
                 class="control-button bg-yellow-500 text-white hover:bg-yellow-600 w-full"
             >
                 Reset to Start (0:00)
