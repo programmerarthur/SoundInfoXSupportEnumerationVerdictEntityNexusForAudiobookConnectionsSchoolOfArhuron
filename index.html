@@ -172,7 +172,7 @@
     const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
     
     // Fallback for external environments (MUST be updated by the user for external hosting)
-    const EXTERNAL_FIREBASE_CONFIG = {
+        const EXTERNAL_FIREBASE_CONFIG = {
     apiKey: "AIzaSyC7eitj-tb2mHofXyJEHaegvNu_7EgXxxw",
     authDomain: "audiobookschoolofarhuron.firebaseapp.com",
     projectId: "audiobookschoolofarhuron",
@@ -180,6 +180,7 @@
     messagingSenderId: "771527529225",
     appId: "1:771527529225:web:4f46a5bcc8008582e579d8"
     };
+
 
     const configToUse = firebaseConfig || EXTERNAL_FIREBASE_CONFIG;
     
@@ -310,8 +311,9 @@
             .catch(err => console.error("Error updating user presence:", err));
         };
 
+        // CRITICAL FIX: Update presence immediately upon connection
         updatePresence(); 
-        // Interval to keep the user marked as active
+        // Then, set interval to keep the user marked as active
         setInterval(updatePresence, INACTIVITY_TIMEOUT_MS / 3); 
     }
 
@@ -326,10 +328,26 @@
             
             snapshot.forEach(userDoc => {
                 const data = userDoc.data();
-                const lastSeenMs = data.lastSeen ? data.lastSeen.toMillis() : 0;
                 
-                // Filter: Only count users seen in the last 15 seconds (INACTIVITY_TIMEOUT_MS)
-                if (lastSeenMs >= cutoff.getTime()) {
+                // Get the current user ID
+                const currentUserId = auth.currentUser ? auth.currentUser.uid : null;
+
+                // FIX: Check if the current user is active first, if not, count them if the data is stale
+                let isUserActive = false;
+                
+                // If we have a timestamp, use it to check for recent activity
+                if (data.lastSeen) {
+                    const lastSeenMs = data.lastSeen.toMillis();
+                    if (lastSeenMs >= cutoff.getTime()) {
+                        isUserActive = true;
+                    }
+                } 
+                // If the user is the current user and their document exists, assume active initially until the timestamp syncs
+                else if (userDoc.id === currentUserId) {
+                    isUserActive = true; 
+                }
+
+                if (isUserActive) {
                     totalActiveUsers++;
                     if (data.isReady) {
                         readyCount++;
