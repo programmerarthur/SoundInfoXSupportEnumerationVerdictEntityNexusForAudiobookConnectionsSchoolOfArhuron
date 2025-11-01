@@ -195,7 +195,7 @@
         /**
          * Toggles the current user's local and remote readiness status.
          */
-        async function toggleReady() {
+        function toggleReady() {
             if (!currentUserRef) {
                 logError("Authentication not complete. Cannot set ready status.");
                 return;
@@ -215,16 +215,16 @@
             }
             
             // Immediately update the remote status
-            await setDoc(currentUserRef, { isReady: isReady }, { merge: true })
+            setDoc(currentUserRef, { isReady: isReady }, { merge: true })
                 .catch(err => logError("Failed to update ready status:", err));
         }
 
 
         // --- Player State Synchronization ---
 
-        async function syncPlayerState(isPlaying, currentTime) {
+        function syncPlayerState(isPlaying, currentTime) {
             try {
-                await setDoc(playerStateRef, {
+                setDoc(playerStateRef, {
                     isPlaying: isPlaying,
                     currentTime: currentTime,
                     updatedAt: serverTimestamp()
@@ -259,7 +259,9 @@
                     }
 
                     // Seek synchronization (Tolerance for drift: 1 second)
-                    if (Math.abs(localTime - data.currentTime) > 1.0) {
+                    // The player.seekTo method is being called before the player object is guaranteed to be fully initialized 
+                    // or YT API methods are ready. The previous error was a result of this timing.
+                    if (player.seekTo && Math.abs(localTime - data.currentTime) > 1.0) {
                         player.seekTo(data.currentTime, true);
                         logStatus(`Remote signal: Seeking to ${data.currentTime.toFixed(2)}s.`);
                     }
@@ -332,8 +334,9 @@
         }
 
         // --- Global functions for buttons ---
+        // FIX: Attach functions to the window object to make them accessible via HTML onclick attributes
         window.toggleReady = toggleReady;
-        window.syncPlayerState = syncPlayerState; // Expose for Sync button
+        window.syncPlayerState = syncPlayerState; 
 
         // Load the YouTube IFrame API asynchronously
         (function() {
