@@ -5,334 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Synchronized Audiobook Player</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script type="module">
-        // Renaming the Firebase SDK function to avoid collision
-        import { initializeApp as initializeFirebaseApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, onSnapshot, collection, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-        
-        // --- Firebase Configuration ---
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
-        
-        // Note: EXTERNAL_FIREBASE_CONFIG remains for external hosting compatibility.
-        const EXTERNAL_FIREBASE_CONFIG = {
-        apiKey: "AIzaSyC7eitj-tb2mHofXyJEHaegvNu_7EgXxxw",
-        authDomain: "audiobookschoolofarhuron.firebaseapp.com",
-        projectId: "audiobookschoolofarhuron",
-        storageBucket: "audiobookschoolofarhuron.firebasestorage.app",
-        messagingSenderId: "771527529225",
-        appId: "1:771527529225:web:4f46a5bcc8008582e579d8"
-        };
-
-        const configToUse = firebaseConfig || EXTERNAL_FIREBASE_CONFIG;
-        
-        let app;
-        let db;
-        let auth;
-        let userId;
-        let player;
-        
-        let playerStateRef;
-        let usersRef;
-        let currentUserRef;
-
-        let isReady = false; 
-        const READY_THRESHOLD_PERCENTAGE = 0.5; 
-        const INACTIVITY_TIMEOUT_MS = 15000; 
-
-        // --- Utility Functions ---
-        function getElement(id) {
-            return document.getElementById(id);
-        }
-
-        function logError(message) {
-            console.error(message);
-            const messageBox = getElement('messageBox');
-            messageBox.innerHTML = `<div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-4" role="alert">${message}</div>`;
-        }
-
-        function logStatus(message, isError = false) {
-            console.log(message);
-            const statusText = getElement('statusText');
-            statusText.textContent = message;
-            statusText.className = isError 
-                ? 'text-red-600 font-semibold' 
-                : 'text-green-600 font-semibold';
-        }
-
-        // --- Firebase Initialization and Authentication (Custom Function) ---
-        // RENAMED from initializeApp to initializeAppAndAuth to resolve SyntaxError
-        async function initializeAppAndAuth() {
-            if (!configToUse || !configToUse.projectId || configToUse.projectId.includes("YOUR_PASTED")) {
-                logError("CRITICAL: Firebase configuration is missing or invalid. Please update EXTERNAL_FIREBASE_CONFIG.");
-                return;
-            }
-
-            try {
-                // Use the renamed imported function
-                app = initializeFirebaseApp(configToUse); 
-                db = getFirestore(app);
-                auth = getAuth(app);
-
-                await signInAnonymously(auth);
-                
-                onAuthStateChanged(auth, (user) => {
-                    if (user) {
-                        userId = user.uid;
-                        getElement('userIdDisplay').textContent = userId; 
-                        logStatus(`Authenticated: User ID ${userId.substring(0, 8)}...`);
-                        
-                        setupFirestoreReferences();
-                        setupFirestoreListener();
-                        monitorUserPresence(); 
-                        listenToReadyStatus();
-                        
-                    } else {
-                        logStatus("Authentication failed. Retrying anonymously.", true);
-                        signInAnonymously(auth);
-                    }
-                });
-            } catch (error) {
-                logError(`Firebase Init Error: ${error.message}`);
-            }
-        }
-
-        function setupFirestoreReferences() {
-            const playerStateDocPath = `artifacts/${appId}/public/data/audiobook_player_state/state`;
-            playerStateRef = doc(db, playerStateDocPath);
-
-            const usersCollectionPath = `artifacts/${appId}/public/data/audiobook_users`;
-            usersRef = collection(db, usersCollectionPath);
-            
-            currentUserRef = doc(db, usersCollectionPath, auth.currentUser.uid);
-        }
-
-        // --- User Presence and Readiness ---
-
-        /**
-         * Updates the current user's lastSeen timestamp and isReady status in Firestore.
-         */
-        function monitorUserPresence() {
-            const updatePresence = () => {
-                setDoc(currentUserRef, {
-                    isReady: isReady,
-                    lastSeen: serverTimestamp()
-                }, { merge: true })
-                .catch(err => console.error("Error updating user presence:", err));
-            };
-
-            updatePresence(); 
-            setInterval(updatePresence, INACTIVITY_TIMEOUT_MS / 3); 
-        }
-
-        /**
-         * Listens to all user documents to calculate total active and ready users.
-         */
-        function listenToReadyStatus() {
-            const cutoff = new Date(Date.now() - INACTIVITY_TIMEOUT_MS);
-            
-            onSnapshot(usersRef, (snapshot) => {
-                const activeUsers = [];
-                let readyCount = 0;
-                
-                snapshot.forEach(userDoc => {
-                    const data = userDoc.data();
-                    const lastSeenMs = data.lastSeen ? data.lastSeen.toMillis() : 0;
-                    
-                    if (lastSeenMs >= cutoff.getTime()) {
-                        activeUsers.push(userDoc.id);
-                        if (data.isReady) {
-                            readyCount++;
-                        }
-                    }
-                });
-                
-                const totalActiveUsers = activeUsers.length;
-                const requiredReadyCount = Math.ceil(totalActiveUsers * READY_THRESHOLD_PERCENTAGE);
-                
-                getElement('readyStatus').textContent = `Ready: ${readyCount} / ${totalActiveUsers}`;
-
-                // Check for start condition
-                if (totalActiveUsers > 0 && readyCount >= requiredReadyCount) {
-                    if (player && player.getPlayerState() !== YT.PlayerState.PLAYING) {
-                        logStatus(`START CONDITION MET! Initiating video playback for all ${totalActiveUsers} users.`);
-                        // Check for player method existence before calling
-                        if (player.playVideo) {
-                             // Use player's current time to sync from start time (0)
-                             syncPlayerState(true, player.getCurrentTime() || 0); 
-                        } else {
-                            logStatus("Player not ready to play video.", true);
-                        }
-                    }
-                } else {
-                    const needed = Math.max(0, requiredReadyCount - readyCount);
-                    if (totalActiveUsers > 0) {
-                        logStatus(`Waiting for ${needed} more user(s) to be ready... (${Math.ceil(READY_THRESHOLD_PERCENTAGE * 100)}% required)`);
-                    } else {
-                        logStatus(`Waiting for users to connect...`);
-                    }
-                }
-            });
-        }
-
-        /**
-         * Toggles the current user's local and remote readiness status.
-         * Exposed globally via window.toggleReady
-         */
-        function toggleReady() {
-            if (!currentUserRef) {
-                logError("Authentication not complete. Cannot set ready status.");
-                return;
-            }
-            isReady = !isReady;
-            
-            const readyBtn = getElement('readyButton');
-            if (isReady) {
-                readyBtn.textContent = 'Unready';
-                readyBtn.classList.remove('bg-green-500', 'hover:bg-green-600');
-                readyBtn.classList.add('bg-red-500', 'hover:bg-red-600');
-            } else {
-                readyBtn.textContent = 'I am Ready';
-                readyBtn.classList.remove('bg-red-500', 'hover:bg-red-600');
-                readyBtn.classList.add('bg-green-500', 'hover:bg-green-600');
-            }
-            
-            setDoc(currentUserRef, { isReady: isReady }, { merge: true })
-                .catch(err => logError("Failed to update ready status:", err));
-        }
-
-
-        // --- Player State Synchronization ---
-
-        /**
-         * Sends player state (playing/paused and current time) to Firestore.
-         * Exposed globally via window.syncPlayerState
-         */
-        function syncPlayerState(isPlaying, currentTime) {
-            try {
-                setDoc(playerStateRef, {
-                    isPlaying: isPlaying,
-                    currentTime: currentTime,
-                    updatedAt: serverTimestamp()
-                });
-                logStatus(isPlaying ? `Synced: PLAY at ${currentTime.toFixed(2)}s` : `Synced: PAUSE at ${currentTime.toFixed(2)}s`);
-            } catch (e) {
-                logError("Error synchronizing state: " + e);
-            }
-        }
-
-        function setupFirestoreListener() {
-            onSnapshot(playerStateRef, (docSnapshot) => {
-                if (docSnapshot.exists()) {
-                    const data = docSnapshot.data();
-                    if (!player || !player.getPlayerState) return;
-
-                    const playerState = player.getPlayerState();
-                    const localTime = player.getCurrentTime();
-                    
-                    if (data.isPlaying) {
-                        if (playerState !== YT.PlayerState.PLAYING && playerState !== YT.PlayerState.BUFFERING) {
-                            if (player.playVideo) player.playVideo();
-                            logStatus(`Remote signal: Playing video.`);
-                        }
-                    } else {
-                        if (playerState !== YT.PlayerState.PAUSED) {
-                            if (player.pauseVideo) player.pauseVideo();
-                            logStatus(`Remote signal: Pausing video.`);
-                        }
-                    }
-
-                    // Seek synchronization (Tolerance for drift: 1 second)
-                    if (player.seekTo && Math.abs(localTime - data.currentTime) > 1.0) {
-                        player.seekTo(data.currentTime, true);
-                        logStatus(`Remote signal: Seeking to ${data.currentTime.toFixed(2)}s.`);
-                    }
-                } else {
-                    logStatus("Firestore state document does not exist. Initializing state...");
-                    setDoc(playerStateRef, { 
-                        isPlaying: false, 
-                        currentTime: 0, 
-                        updatedAt: serverTimestamp() 
-                    });
-                }
-            }, (error) => {
-                logError(`Firestore Listener Error: ${error.message}`);
-            });
-        }
-
-        // --- YouTube Player API ---
-
-        let ytPlayerReady = false;
-
-        window.onYouTubeIframeAPIReady = function() {
-            ytPlayerReady = true;
-            initializeAppAndAuth(); // Call the renamed initialization function
-            
-            player = new YT.Player('player', {
-                height: '390',
-                width: '640',
-                videoId: 'MF58C9JJhJk', 
-                playerVars: {
-                    'controls': 0, 
-                    'disablekb': 1, 
-                    'modestbranding': 1,
-                    'rel': 0, 
-                    'showinfo': 0,
-                    'enablejsapi': 1,
-                    'origin': window.location.origin
-                },
-                events: {
-                    'onReady': onPlayerReady,
-                    'onStateChange': onPlayerStateChange
-                }
-            });
-        };
-
-        function onPlayerReady(event) {
-            logStatus("YouTube Player is Ready. Awaiting Firebase connection...");
-            const playerOverlay = getElement('playerOverlay');
-            if (playerOverlay) playerOverlay.style.display = 'none';
-        }
-
-        function onPlayerStateChange(event) {
-            if (!auth || !auth.currentUser) return; 
-            
-            const currentTime = player.getCurrentTime();
-            const isPlaying = event.data === YT.PlayerState.PLAYING;
-            const isPaused = event.data === YT.PlayerState.PAUSED;
-
-            if (isPlaying) {
-                syncPlayerState(true, currentTime);
-            } else if (isPaused) {
-                syncPlayerState(false, currentTime);
-            }
-        }
-
-        // --- Global functions for buttons ---
-        // CRITICAL FIX: Expose functions to the global window object for HTML onclick to work
-        window.toggleReady = toggleReady;
-        window.syncPlayerState = syncPlayerState; 
-        
-        // Helper function for the Reset button to handle the seekTo TypeError gracefully
-        window.resetPlayerState = function() {
-            if (player && player.seekTo) {
-                player.seekTo(0, true); 
-                syncPlayerState(false, 0);
-            } else {
-                logStatus("Player API is not fully ready for seeking.", true);
-            }
-        }
-
-        // Load the YouTube IFrame API asynchronously
-        (function() {
-            var tag = document.createElement('script');
-            tag.src = "https://www.youtube.com/iframe_api";
-            var firstScriptTag = document.getElementsByTagName('script')[0];
-            firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
-        })();
-
-    </script>
+    
+    <!-- ================================== CSS STYLES ================================== -->
     <style>
         body {
             font-family: 'Inter', sans-serif;
@@ -393,33 +67,33 @@
         <p class="text-gray-500 text-sm">Your ID (full string): <span id="userIdDisplay" class="font-mono bg-gray-100 px-1 rounded">Loading...</span></p>
     </div>
 
-    <!-- New Readiness and Sync Controls -->
+    <!-- Readiness and Sync Controls -->
     <div class="flex flex-col sm:flex-row space-y-4 sm:space-y-0 sm:space-x-4">
         
-        <!-- READY STATUS -->
+        <!-- READY STATUS DISPLAY -->
         <div class="flex-grow bg-blue-50 border border-blue-200 text-blue-700 px-4 py-3 rounded-lg shadow-inner flex items-center justify-between">
             <span class="font-semibold text-sm sm:text-base">Session Readiness:</span>
             <span id="readyStatus" class="text-lg font-extrabold">Ready: 0 / 0</span>
         </div>
 
         <!-- READY BUTTON -->
-        <button id="readyButton" onclick="toggleReady()" class="control-button bg-green-500 text-white hover:bg-green-600 w-full sm:w-auto flex-shrink-0">
+        <button id="readyButton" onclick="window.toggleReady()" class="control-button bg-green-500 text-white hover:bg-green-600 w-full sm:w-auto flex-shrink-0">
             I am Ready
         </button>
     </div>
 
-    <!-- Synchronization Controls -->
+    <!-- Synchronization Controls (Host Use) -->
     <div class="mt-6 pt-4 border-t">
         <h2 class="text-xl font-bold text-gray-700 mb-3">Sync Management (Host Use)</h2>
         <div class="flex flex-col space-y-3 sm:flex-row sm:space-y-0 sm:space-x-4">
             <button 
-                onclick="syncPlayerState(player && player.getPlayerState() === YT.PlayerState.PLAYING, player ? player.getCurrentTime() : 0)" 
+                onclick="window.sendCurrentState()" 
                 class="control-button bg-blue-500 text-white hover:bg-blue-600 w-full"
             >
                 Synchronize (Send Current State)
             </button>
             <button 
-                onclick="resetPlayerState()" 
+                onclick="window.resetPlayerState()" 
                 class="control-button bg-yellow-500 text-white hover:bg-yellow-600 w-full"
             >
                 Reset to Start (0:00)
@@ -437,6 +111,323 @@
         Multi-user synchronization via Firestore.
     </footer>
 </div>
+
+<!-- ================================== JAVASCRIPT LOGIC ================================== -->
+<script type="module">
+    // Renaming the Firebase SDK function to avoid collision (Fixes SyntaxError)
+    import { initializeApp as initializeFirebaseApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+    import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+    import { getFirestore, doc, setDoc, onSnapshot, collection, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+    
+    // --- Global State and Constants ---
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+    const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+    
+    // Fallback for external environments (MUST be updated by the user for external hosting)
+    const EXTERNAL_FIREBASE_CONFIG = {
+    apiKey: "AIzaSyC7eitj-tb2mHofXyJEHaegvNu_7EgXxxw",
+    authDomain: "audiobookschoolofarhuron.firebaseapp.com",
+    projectId: "audiobookschoolofarhuron",
+    storageBucket: "audiobookschoolofarhuron.firebasestorage.app",
+    messagingSenderId: "771527529225",
+    appId: "1:771527529225:web:4f46a5bcc8008582e579d8"
+    };
+
+    const configToUse = firebaseConfig || EXTERNAL_FIREBASE_CONFIG;
+    
+    let app, db, auth, userId, player;
+    let playerStateRef, usersRef, currentUserRef;
+
+    let isReady = false; 
+    const READY_THRESHOLD_PERCENTAGE = 0.5; 
+    const INACTIVITY_TIMEOUT_MS = 15000; 
+
+    // --- Utility Functions ---
+    function getElement(id) {
+        return document.getElementById(id);
+    }
+
+    function logError(message) {
+        console.error(message);
+        const messageBox = getElement('messageBox');
+        messageBox.innerHTML = `<div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-4" role="alert">Error: ${message}</div>`;
+    }
+
+    function logStatus(message, isError = false) {
+        console.log(message);
+        const statusText = getElement('statusText');
+        statusText.textContent = message;
+        statusText.className = isError 
+            ? 'text-red-600 font-semibold' 
+            : 'text-green-600 font-semibold';
+    }
+
+    // --- Firebase Initialization and Authentication ---
+    async function initializeAppAndAuth() {
+        if (!configToUse || !configToUse.projectId || configToUse.projectId.includes("YOUR_PASTED")) {
+            logError("CRITICAL: Firebase config missing. Please check EXTERNAL_FIREBASE_CONFIG.");
+            return;
+        }
+
+        try {
+            app = initializeFirebaseApp(configToUse); 
+            db = getFirestore(app);
+            auth = getAuth(app);
+
+            await signInAnonymously(auth);
+            
+            onAuthStateChanged(auth, (user) => {
+                if (user) {
+                    userId = user.uid;
+                    getElement('userIdDisplay').textContent = userId; 
+                    logStatus(`Authenticated: User ID ${userId.substring(0, 8)}...`);
+                    
+                    setupFirestoreReferences();
+                    setupFirestoreListener();
+                    monitorUserPresence(); 
+                    listenToReadyStatus();
+                    
+                } else {
+                    logStatus("Authentication failed. Retrying anonymously.", true);
+                    signInAnonymously(auth);
+                }
+            });
+        } catch (error) {
+            logError(`Firebase Init Error: ${error.message}`);
+        }
+    }
+
+    function setupFirestoreReferences() {
+        const playerStateDocPath = `artifacts/${appId}/public/data/audiobook_player_state/state`;
+        playerStateRef = doc(db, playerStateDocPath);
+
+        const usersCollectionPath = `artifacts/${appId}/public/data/audiobook_users`;
+        usersRef = collection(db, usersCollectionPath);
+        
+        currentUserRef = doc(db, usersCollectionPath, auth.currentUser.uid);
+    }
+
+    // --- User Presence and Readiness ---
+
+    /** Updates the current user's lastSeen timestamp and isReady status. */
+    function monitorUserPresence() {
+        const updatePresence = () => {
+            setDoc(currentUserRef, {
+                isReady: isReady,
+                lastSeen: serverTimestamp()
+            }, { merge: true })
+            .catch(err => console.error("Error updating user presence:", err));
+        };
+
+        updatePresence(); 
+        setInterval(updatePresence, INACTIVITY_TIMEOUT_MS / 3); 
+    }
+
+    /** Listens to all user documents to calculate total active and ready users. */
+    function listenToReadyStatus() {
+        const cutoff = new Date(Date.now() - INACTIVITY_TIMEOUT_MS);
+        
+        onSnapshot(usersRef, (snapshot) => {
+            const activeUsers = [];
+            let readyCount = 0;
+            
+            snapshot.forEach(userDoc => {
+                const data = userDoc.data();
+                const lastSeenMs = data.lastSeen ? data.lastSeen.toMillis() : 0;
+                
+                // Filter: Only count users seen in the last 15 seconds
+                if (lastSeenMs >= cutoff.getTime()) {
+                    activeUsers.push(userDoc.id);
+                    if (data.isReady) {
+                        readyCount++;
+                    }
+                }
+            });
+            
+            const totalActiveUsers = activeUsers.length;
+            const requiredReadyCount = Math.ceil(totalActiveUsers * READY_THRESHOLD_PERCENTAGE);
+            
+            getElement('readyStatus').textContent = `Ready: ${readyCount} / ${totalActiveUsers}`;
+
+            // Auto-start condition
+            if (totalActiveUsers > 0 && readyCount >= requiredReadyCount) {
+                if (player && player.getPlayerState() !== YT.PlayerState.PLAYING) {
+                    logStatus(`START CONDITION MET! Initiating video playback for all ${totalActiveUsers} users.`);
+                    // Send the PLAY signal to Firestore
+                    syncPlayerState(true, player.getCurrentTime() || 0); 
+                }
+            } else {
+                const needed = Math.max(0, requiredReadyCount - readyCount);
+                if (totalActiveUsers > 0) {
+                    logStatus(`Waiting for ${needed} more user(s) to be ready... (${Math.ceil(READY_THRESHOLD_PERCENTAGE * 100)}% required)`);
+                } else {
+                    logStatus(`Waiting for users to connect...`);
+                }
+            }
+        });
+    }
+
+    /** Toggles the current user's local and remote readiness status. */
+    function toggleReady() {
+        if (!currentUserRef) {
+            logError("Authentication not complete. Cannot set ready status.");
+            return;
+        }
+        isReady = !isReady;
+        
+        const readyBtn = getElement('readyButton');
+        if (isReady) {
+            readyBtn.textContent = 'Unready';
+            readyBtn.classList.remove('bg-green-500', 'hover:bg-green-600');
+            readyBtn.classList.add('bg-red-500', 'hover:bg-red-600');
+        } else {
+            readyBtn.textContent = 'I am Ready';
+            readyBtn.classList.remove('bg-red-500', 'hover:bg-red-600');
+            readyBtn.classList.add('bg-green-500', 'hover:bg-green-600');
+        }
+        
+        // Immediately update the remote status
+        setDoc(currentUserRef, { isReady: isReady }, { merge: true })
+            .catch(err => logError("Failed to update ready status:", err));
+    }
+
+
+    // --- Player State Synchronization ---
+
+    /** Sends player state (playing/paused and current time) to Firestore. */
+    function syncPlayerState(isPlaying, currentTime) {
+        try {
+            setDoc(playerStateRef, {
+                isPlaying: isPlaying,
+                currentTime: currentTime,
+                updatedAt: serverTimestamp()
+            });
+            logStatus(isPlaying ? `Synced: PLAY at ${currentTime.toFixed(2)}s` : `Synced: PAUSE at ${currentTime.toFixed(2)}s`);
+        } catch (e) {
+            logError("Error synchronizing state: " + e);
+        }
+    }
+
+    function setupFirestoreListener() {
+        onSnapshot(playerStateRef, (docSnapshot) => {
+            if (docSnapshot.exists()) {
+                const data = docSnapshot.data();
+                if (!player || !player.getPlayerState) return;
+
+                const playerState = player.getPlayerState();
+                const localTime = player.getCurrentTime();
+                
+                // Handle Play/Pause
+                if (data.isPlaying) {
+                    if (playerState !== YT.PlayerState.PLAYING && playerState !== YT.PlayerState.BUFFERING) {
+                        if (player.playVideo) player.playVideo();
+                        logStatus(`Remote signal: Playing video.`);
+                    }
+                } else {
+                    if (playerState !== YT.PlayerState.PAUSED) {
+                        if (player.pauseVideo) player.pauseVideo();
+                        logStatus(`Remote signal: Pausing video.`);
+                    }
+                }
+
+                // Seek synchronization (Tolerance for drift: 1 second)
+                if (player.seekTo && Math.abs(localTime - data.currentTime) > 1.0) {
+                    player.seekTo(data.currentTime, true);
+                    logStatus(`Remote signal: Seeking to ${data.currentTime.toFixed(2)}s.`);
+                }
+            } else {
+                logStatus("Firestore state document does not exist. Initializing state...");
+                // Initialize the state if it doesn't exist
+                setDoc(playerStateRef, { 
+                    isPlaying: false, 
+                    currentTime: 0, 
+                    updatedAt: serverTimestamp() 
+                });
+            }
+        }, (error) => {
+            logError(`Firestore Listener Error: ${error.message}`);
+        });
+    }
+
+    // --- YouTube Player API ---
+
+    window.onYouTubeIframeAPIReady = function() {
+        initializeAppAndAuth(); 
+        
+        player = new YT.Player('player', {
+            height: '390',
+            width: '640',
+            videoId: 'MF58C9JJhJk', 
+            playerVars: {
+                'controls': 0, 
+                'disablekb': 1, 
+                'modestbranding': 1,
+                'rel': 0, 
+                'showinfo': 0,
+                'enablejsapi': 1,
+                'origin': window.location.origin
+            },
+            events: {
+                'onReady': onPlayerReady,
+                'onStateChange': onPlayerStateChange
+            }
+        });
+    };
+
+    function onPlayerReady(event) {
+        logStatus("YouTube Player is Ready. Awaiting Firebase connection...");
+    }
+
+    function onPlayerStateChange(event) {
+        if (!auth || !auth.currentUser) return; 
+        
+        const currentTime = player.getCurrentTime();
+        const isPlaying = event.data === YT.PlayerState.PLAYING;
+        const isPaused = event.data === YT.PlayerState.PAUSED;
+
+        if (isPlaying) {
+            syncPlayerState(true, currentTime);
+        } else if (isPaused) {
+            syncPlayerState(false, currentTime);
+        }
+    }
+
+    // --- Global Helpers for HTML Buttons (Fixes all ReferenceErrors) ---
+
+    // 1. Toggles ready state (exposed globally as `window.toggleReady`)
+    window.toggleReady = toggleReady;
+
+    // 2. Safely sends current state to Firestore (exposed globally as `window.sendCurrentState`)
+    window.sendCurrentState = function() {
+        if (player && player.getPlayerState) {
+            const isPlaying = player.getPlayerState() === YT.PlayerState.PLAYING;
+            const currentTime = player.getCurrentTime() || 0;
+            syncPlayerState(isPlaying, currentTime);
+        } else {
+            logStatus("Player not ready to send state.", true);
+        }
+    }
+    
+    // 3. Resets and synchronizes to time 0 (exposed globally as `window.resetPlayerState`)
+    window.resetPlayerState = function() {
+        // Checks for player readiness (Fixes TypeError)
+        if (player && player.seekTo) {
+            player.seekTo(0, true); 
+            syncPlayerState(false, 0);
+        } else {
+            logStatus("Player API is not fully ready for seeking (Reset failed).", true);
+        }
+    }
+
+    // Load the YouTube IFrame API asynchronously
+    (function() {
+        var tag = document.createElement('script');
+        tag.src = "https://www.youtube.com/iframe_api";
+        var firstScriptTag = document.getElementsByTagName('script')[0];
+        firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
+    })();
+
+</script>
 
 </body>
 </html>
