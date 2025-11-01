@@ -145,17 +145,44 @@
 
         // Global variables provided by the environment
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const ENVIRONMENT_CONFIG = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
         const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-
+        
+        // --- IMPORTANT: FOR EXTERNAL HOSTING (like GitHub Pages) ---
+        // If you publish this file to a public web server, the environment config will be missing.
+        // You MUST replace the placeholder values in EXTERNAL_FIREBASE_CONFIG below 
+        // with your actual Firebase Project credentials (get them from the Firebase Console).
+        const EXTERNAL_FIREBASE_CONFIG = {
+        apiKey: "AIzaSyC7eitj-tb2mHofXyJEHaegvNu_7EgXxxw",
+        authDomain: "audiobookschoolofarhuron.firebaseapp.com",
+        projectId: "audiobookschoolofarhuron",
+        storageBucket: "audiobookschoolofarhuron.firebasestorage.app",
+        messagingSenderId: "771527529225",
+        appId: "1:771527529225:web:4f46a5bcc8008582e579d8"
+        };
+        
+        // Use the environment config if available and non-empty, otherwise use the external config
+        const firebaseConfig = ENVIRONMENT_CONFIG && Object.keys(ENVIRONMENT_CONFIG).length > 0
+            ? ENVIRONMENT_CONFIG
+            : EXTERNAL_FIREBASE_CONFIG;
+        
         // YouTube Video ID (Placeholder for an audiobook clip)
         const YOUTUBE_VIDEO_ID = 'MF58C9JJhJk'; 
 
         // Initialize Firebase and Global Variables
-        const app = fbInitializeApp(firebaseConfig);
-        const db = fbGetFirestore(app);
-        const auth = fbGetAuth(app);
-        fbSetLogLevel('Debug'); // Enable Firestore logging
+        // Note: initializeApp will now use the correct config for the environment it's in.
+        let app, db, auth;
+        try {
+            app = fbInitializeApp(firebaseConfig);
+            db = fbGetFirestore(app);
+            auth = fbGetAuth(app);
+            fbSetLogLevel('Debug'); // Enable Firestore logging
+        } catch (e) {
+            console.error("Firebase Initialization Error. Check your EXTERNAL_FIREBASE_CONFIG if running externally.", e);
+            document.getElementById('statusMessage').textContent = 'Firebase Error. Check console.';
+            // Halt execution if Firebase can't initialize
+            throw e; 
+        }
 
         let userId = null;
         let player = null; // YouTube Player Object
@@ -163,6 +190,7 @@
         let isUserAction = false; // Flag to indicate if the change came from this user's button press
         let playerStatusRef = null;
         let playerDuration = 0;
+        let playerState = { sessionActive: false }; // Local state cache
         let checkInterval = null; // Interval for constant time updates
 
         // YouTube Player State Constants
@@ -192,9 +220,8 @@
             // 1. Update local UI time constantly
             document.getElementById('currentLocalTime').textContent = formatTime(currentTime);
 
-            // 2. Synchronization Check (when playing)
-            if (player.getPlayerState() === YT_PLAYING && !isSyncing && !isUserAction) {
-                // Keep slider value updated locally
+            // 2. Keep slider value updated locally
+            if (player.getPlayerState() === YT_PLAYING) {
                 document.getElementById('seekBar').value = currentTime;
             }
         }
@@ -207,35 +234,44 @@
             playerState = state;
             
             // --- READY STATE LOGIC ---
-            const readyCount = state.readyUsers ? Object.keys(state.readyUsers).length : 0;
+            const readyUsers = state.readyUsers || {};
+            const readyCount = Object.keys(readyUsers).length;
             document.getElementById('readyCount').textContent = readyCount;
+            
+            const readyContainer = document.getElementById('readyContainer');
+            const audioPlayerContainer = document.getElementById('audioPlayerContainer');
             
             if (!state.sessionActive) {
                 // Session is not active, show the READY UI
-                document.getElementById('readyContainer').classList.remove('hidden');
-                document.getElementById('audioPlayerContainer').classList.add('hidden');
+                readyContainer.classList.remove('hidden');
+                audioPlayerContainer.classList.add('hidden');
                 
-                // Enable Play button if current user is ready (or if we are the only one)
-                const isReady = state.readyUsers && state.readyUsers[userId];
-                
+                // Set current user ready button state
+                const isReady = readyUsers[userId];
                 document.getElementById('readyBtn').disabled = isReady;
-                document.getElementById('readyBtn').textContent = isReady ? 'Ready!' : 'I\'m Ready';
+                document.getElementById('readyBtn').textContent = isReady ? 'Ready! (Waiting for Host)' : 'I\'m Ready';
 
                 const startButton = document.getElementById('sessionStartBtn');
-                if (isReady) {
+                if (isReady && readyCount > 0) {
                     startButton.disabled = false;
                     startButton.textContent = 'Start Listening';
                 } else {
                     startButton.disabled = true;
-                    startButton.textContent = 'Wait for Ready Signal...';
+                    startButton.textContent = 'Waiting for Ready Signal...';
                 }
+
+                // If paused, ensure local player is at the start time
+                player.pauseVideo();
+                player.seekTo(state.currentTime || 0, true);
+                
+                document.getElementById('currentGlobalTime').textContent = formatTime(state.currentTime || 0);
 
                 return; // Stop sync logic if session is not active
             } 
             
             // Session is active, show the PLAYER UI
-            document.getElementById('readyContainer').classList.add('hidden');
-            document.getElementById('audioPlayerContainer').classList.remove('hidden');
+            readyContainer.classList.add('hidden');
+            audioPlayerContainer.classList.remove('hidden');
             // --- END READY STATE LOGIC ---
 
             
@@ -324,7 +360,7 @@
             
             // Check if the document exists and initialize it if not
             fbGetDoc(playerStatusRef).then(docSnap => {
-                if (!docSnap.exists()) {
+                if (!docSnap.exists() || !docSnap.data().sessionActive) {
                     // Initialize state with readiness flags and session control
                     fbSetDoc(playerStatusRef, {
                         isPlaying: false,
@@ -340,7 +376,7 @@
 
             // Listen for real-time changes
             fbOnSnapshot(playerStatusRef, (doc) => {
-                if (doc.exists() && player && !isUserAction) {
+                if (doc.exists() && player) {
                     const state = doc.data();
                     synchronizePlayer(state);
                 }
@@ -355,12 +391,12 @@
             if (!userId) return;
 
             try {
-                // Register the current user as ready
                 isUserAction = true;
+                // Use a proper document update to set the ready status for the current user
                 await fbUpdateDoc(playerStatusRef, {
-                    [`readyUsers.${userId}`]: true // Simply set the user's ID as a key
+                    [`readyUsers.${userId}`]: true 
                 });
-                console.log(`User ${userId} set to Ready.`);
+                document.getElementById('readyBtn').textContent = 'Ready! (Waiting for Host)';
             } catch (error) {
                 console.error("Error setting ready status: ", error);
             } finally {
@@ -369,21 +405,24 @@
         }
         
         async function handleSessionStart() {
-            // This function is only called when the user is already ready.
+            // This function is only called when the user is already ready and clicks "Start Listening".
             try {
                 isUserAction = true;
                 
-                // 1. Set the session to active
-                // 2. Clear the readyUsers map (it's no longer needed once the session starts)
-                // 3. Set initial playback state (playing from 0)
+                // Fully reset the shared document to start the session fresh at time 0
                 await fbSetDoc(playerStatusRef, {
                     isPlaying: true,
                     currentTime: 0,
                     lastUpdatedTime: Date.now() / 1000,
                     updatedBy: userId,
                     sessionActive: true, 
-                    readyUsers: {},
+                    readyUsers: {}, // Clear ready users
                 });
+                
+                // Immediately update local player to start playing
+                player.seekTo(0, true);
+                player.playVideo();
+                
                 console.log("Session started!");
             } catch (error) {
                  console.error("Error starting session: ", error);
@@ -429,18 +468,16 @@
         }
 
         function onPlayerStateChange(event) {
-            if (isSyncing) return;
+            if (isSyncing || !playerState.sessionActive) return;
             
             const state = event.data;
             const currentTime = player.getCurrentTime();
             
             // Only update global state if the session is active
-            if (playerState.sessionActive) {
-                if (state === YT.PlayerState.PLAYING) {
-                    updateGlobalState(true, currentTime);
-                } else if (state === YT.PlayerState.PAUSED || state === YT.PlayerState.ENDED) {
-                    updateGlobalState(false, currentTime);
-                }
+            if (state === YT.PlayerState.PLAYING) {
+                updateGlobalState(true, currentTime);
+            } else if (state === YT.PlayerState.PAUSED || state === YT.PlayerState.ENDED) {
+                updateGlobalState(false, currentTime);
             }
         }
         
@@ -491,14 +528,15 @@
                 fbOnAuthStateChanged(auth, (user) => {
                     if (user) {
                         userId = user.uid;
-                        document.getElementById('userIdDisplay').textContent = `Your ID: ${userId.substring(0, 8)}...`;
+                        // Display only a short ID for cleaner UI, but use full ID for data
+                        document.getElementById('userIdDisplay').textContent = `Your ID: ${userId.substring(0, 8)}...`; 
 
-                        // 2. Attach Event Listeners (Must happen after auth)
+                        // 2. Attach Event Listeners 
                         document.getElementById('playPauseBtn').addEventListener('click', handlePlayPauseClick);
                         document.getElementById('seekBar').addEventListener('change', handleSeekInput); 
                         document.getElementById('seekBar').addEventListener('mouseup', handleSeekInput);
                         
-                        // NEW Ready Listeners
+                        // Ready Listeners
                         document.getElementById('readyBtn').addEventListener('click', handleReadyClick);
                         document.getElementById('sessionStartBtn').addEventListener('click', handleSessionStart);
 
@@ -548,7 +586,7 @@
                         I'm Ready
                     </button>
                     <button id="sessionStartBtn" class="player-button play-button" disabled>
-                        Wait for Ready Signal...
+                        Waiting for Ready Signal...
                     </button>
                 </div>
             </div>
