@@ -76,8 +76,8 @@
             <span id="readyStatus" class="text-lg font-extrabold">Ready: 0 / 0</span>
         </div>
 
-        <!-- READY BUTTON -->
-        <button id="readyButton" onclick="window.toggleReady()" class="control-button bg-green-500 text-white hover:bg-green-600 w-full sm:w-auto flex-shrink-0">
+        <!-- READY BUTTON (onclick removed) -->
+        <button id="readyButton" class="control-button bg-green-500 text-white hover:bg-green-600 w-full sm:w-auto flex-shrink-0">
             I am Ready
         </button>
     </div>
@@ -87,13 +87,13 @@
         <h2 class="text-xl font-bold text-gray-700 mb-3">Sync Management (Host Use)</h2>
         <div class="flex flex-col space-y-3 sm:flex-row sm:space-y-0 sm:space-x-4">
             <button 
-                onclick="window.sendCurrentState()" 
+                id="syncButton"
                 class="control-button bg-blue-500 text-white hover:bg-blue-600 w-full"
             >
                 Synchronize (Send Current State)
             </button>
             <button 
-                onclick="window.resetPlayerState()" 
+                id="resetButton"
                 class="control-button bg-yellow-500 text-white hover:bg-yellow-600 w-full"
             >
                 Reset to Start (0:00)
@@ -114,7 +114,7 @@
 
 <!-- ================================== JAVASCRIPT LOGIC ================================== -->
 <script type="module">
-    // Renaming the Firebase SDK function to avoid collision (Fixes SyntaxError)
+    // Renaming the Firebase SDK function to avoid collision
     import { initializeApp as initializeFirebaseApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
     import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
     import { getFirestore, doc, setDoc, onSnapshot, collection, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
@@ -125,13 +125,13 @@
     
     // Fallback for external environments (MUST be updated by the user for external hosting)
     const EXTERNAL_FIREBASE_CONFIG = {
-    apiKey: "AIzaSyC7eitj-tb2mHofXyJEHaegvNu_7EgXxxw",
-    authDomain: "audiobookschoolofarhuron.firebaseapp.com",
-    projectId: "audiobookschoolofarhuron",
-    storageBucket: "audiobookschoolofarhuron.firebasestorage.app",
-    messagingSenderId: "771527529225",
-    appId: "1:771527529225:web:4f46a5bcc8008582e579d8"
-    };
+  apiKey: "AIzaSyC7eitj-tb2mHofXyJEHaegvNu_7EgXxxw",
+  authDomain: "audiobookschoolofarhuron.firebaseapp.com",
+  projectId: "audiobookschoolofarhuron",
+  storageBucket: "audiobookschoolofarhuron.firebasestorage.app",
+  messagingSenderId: "771527529225",
+  appId: "1:771527529225:web:4f46a5bcc8008582e579d8"
+};
 
     const configToUse = firebaseConfig || EXTERNAL_FIREBASE_CONFIG;
     
@@ -174,8 +174,10 @@
             db = getFirestore(app);
             auth = getAuth(app);
 
+            // Attempt to sign in anonymously
             await signInAnonymously(auth);
             
+            // Set up Auth Listener
             onAuthStateChanged(auth, (user) => {
                 if (user) {
                     userId = user.uid;
@@ -189,7 +191,7 @@
                     
                 } else {
                     logStatus("Authentication failed. Retrying anonymously.", true);
-                    signInAnonymously(auth);
+                    // Re-attempting sign-in is handled by the initial `await signInAnonymously(auth);`
                 }
             });
         } catch (error) {
@@ -212,6 +214,7 @@
     /** Updates the current user's lastSeen timestamp and isReady status. */
     function monitorUserPresence() {
         const updatePresence = () => {
+            if (!currentUserRef) return; // Guard against call before auth is complete
             setDoc(currentUserRef, {
                 isReady: isReady,
                 lastSeen: serverTimestamp()
@@ -251,7 +254,8 @@
 
             // Auto-start condition
             if (totalActiveUsers > 0 && readyCount >= requiredReadyCount) {
-                if (player && player.getPlayerState() !== YT.PlayerState.PLAYING) {
+                // We must check player state to prevent an infinite loop of setting state
+                if (player && player.getPlayerState() !== YT.PlayerState.PLAYING) { 
                     logStatus(`START CONDITION MET! Initiating video playback for all ${totalActiveUsers} users.`);
                     // Send the PLAY signal to Firestore
                     syncPlayerState(true, player.getCurrentTime() || 0); 
@@ -296,6 +300,10 @@
 
     /** Sends player state (playing/paused and current time) to Firestore. */
     function syncPlayerState(isPlaying, currentTime) {
+        if (!playerStateRef) {
+            logError("Firestore references not set. Cannot synchronize state.");
+            return;
+        }
         try {
             setDoc(playerStateRef, {
                 isPlaying: isPlaying,
@@ -309,6 +317,8 @@
     }
 
     function setupFirestoreListener() {
+        if (!playerStateRef) return; // Guard against call before auth is complete
+
         onSnapshot(playerStateRef, (docSnapshot) => {
             if (docSnapshot.exists()) {
                 const data = docSnapshot.data();
@@ -319,13 +329,13 @@
                 
                 // Handle Play/Pause
                 if (data.isPlaying) {
-                    if (playerState !== YT.PlayerState.PLAYING && playerState !== YT.PlayerState.BUFFERING) {
-                        if (player.playVideo) player.playVideo();
+                    if (player.playVideo && playerState !== YT.PlayerState.PLAYING && playerState !== YT.PlayerState.BUFFERING) {
+                        player.playVideo();
                         logStatus(`Remote signal: Playing video.`);
                     }
                 } else {
-                    if (playerState !== YT.PlayerState.PAUSED) {
-                        if (player.pauseVideo) player.pauseVideo();
+                    if (player.pauseVideo && playerState !== YT.PlayerState.PAUSED) {
+                        player.pauseVideo();
                         logStatus(`Remote signal: Pausing video.`);
                     }
                 }
@@ -385,39 +395,48 @@
         const isPlaying = event.data === YT.PlayerState.PLAYING;
         const isPaused = event.data === YT.PlayerState.PAUSED;
 
-        if (isPlaying) {
-            syncPlayerState(true, currentTime);
-        } else if (isPaused) {
-            syncPlayerState(false, currentTime);
+        if (isPlaying || isPaused) {
+            syncPlayerState(isPlaying, currentTime);
         }
     }
 
-    // --- Global Helpers for HTML Buttons (Fixes all ReferenceErrors) ---
+    // --- Global Helpers for Manual Button Actions ---
 
-    // 1. Toggles ready state (exposed globally as `window.toggleReady`)
-    window.toggleReady = toggleReady;
-
-    // 2. Safely sends current state to Firestore (exposed globally as `window.sendCurrentState`)
-    window.sendCurrentState = function() {
-        if (player && player.getPlayerState) {
-            const isPlaying = player.getPlayerState() === YT.PlayerState.PLAYING;
-            const currentTime = player.getCurrentTime() || 0;
-            syncPlayerState(isPlaying, currentTime);
-        } else {
+    // 1. Safely sends current state to Firestore
+    function sendCurrentState() {
+        if (!player || !player.getPlayerState) {
             logStatus("Player not ready to send state.", true);
+            return;
         }
+        const isPlaying = player.getPlayerState() === YT.PlayerState.PLAYING;
+        const currentTime = player.getCurrentTime() || 0;
+        syncPlayerState(isPlaying, currentTime);
     }
     
-    // 3. Resets and synchronizes to time 0 (exposed globally as `window.resetPlayerState`)
-    window.resetPlayerState = function() {
-        // Checks for player readiness (Fixes TypeError)
-        if (player && player.seekTo) {
-            player.seekTo(0, true); 
-            syncPlayerState(false, 0);
-        } else {
+    // 2. Resets and synchronizes to time 0
+    function resetPlayerState() {
+        if (!player || !player.seekTo) {
             logStatus("Player API is not fully ready for seeking (Reset failed).", true);
+            return;
         }
+        player.seekTo(0, true); 
+        syncPlayerState(false, 0);
     }
+    
+    // --- Global exposure and Event Binding (Fixes ReferenceErrors) ---
+    
+    // Expose functions globally for manual calls
+    window.toggleReady = toggleReady;
+    window.sendCurrentState = sendCurrentState; 
+    window.resetPlayerState = resetPlayerState;
+
+    // Attach listeners after the DOM is ready to ensure the elements and functions exist
+    document.addEventListener('DOMContentLoaded', () => {
+        getElement('readyButton')?.addEventListener('click', window.toggleReady);
+        getElement('syncButton')?.addEventListener('click', window.sendCurrentState);
+        getElement('resetButton')?.addEventListener('click', window.resetPlayerState);
+    });
+
 
     // Load the YouTube IFrame API asynchronously
     (function() {
