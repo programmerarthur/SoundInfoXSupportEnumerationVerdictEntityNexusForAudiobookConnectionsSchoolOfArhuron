@@ -16,17 +16,18 @@
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
         const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
         
-        // --- IMPORTANT: FOR EXTERNAL HOSTING (like GitHub Pages) ---
+        // --- ⚠️ IMPORTANT: FOR EXTERNAL HOSTING (like GitHub Pages) ⚠️ ---
         // You MUST replace the placeholder values in EXTERNAL_FIREBASE_CONFIG below 
         // with your actual Firebase Project credentials (get them from the Firebase Console).
+        // NOTE: The user has indicated that they have provided the correct keys for their deployment.
         const EXTERNAL_FIREBASE_CONFIG = {
-  apiKey: "AIzaSyC7eitj-tb2mHofXyJEHaegvNu_7EgXxxw",
-  authDomain: "audiobookschoolofarhuron.firebaseapp.com",
-  projectId: "audiobookschoolofarhuron",
-  storageBucket: "audiobookschoolofarhuron.firebasestorage.app",
-  messagingSenderId: "771527529225",
-  appId: "1:771527529225:web:4f46a5bcc8008582e579d8"
-};
+        apiKey: "AIzaSyC7eitj-tb2mHofXyJEHaegvNu_7EgXxxw",
+        authDomain: "audiobookschoolofarhuron.firebaseapp.com",
+        projectId: "audiobookschoolofarhuron",
+        storageBucket: "audiobookschoolofarhuron.firebasestorage.app",
+        messagingSenderId: "771527529225",
+        appId: "1:771527529225:web:4f46a5bcc8008582e579d8"
+        };
 
         const configToUse = firebaseConfig || EXTERNAL_FIREBASE_CONFIG;
         
@@ -68,6 +69,7 @@
         // --- Firebase Initialization and Authentication ---
 
         async function initializeApp() {
+            // Check if configuration is valid (specifically looking for the placeholder to trigger error)
             if (!configToUse || !configToUse.projectId || configToUse.projectId.includes("YOUR_PASTED")) {
                 logError("CRITICAL: Firebase configuration is missing or invalid. Please update EXTERNAL_FIREBASE_CONFIG.");
                 return;
@@ -85,6 +87,8 @@
                 onAuthStateChanged(auth, (user) => {
                     if (user) {
                         userId = user.uid;
+                        // Display the full ID immediately upon successful auth
+                        getElement('userIdDisplay').textContent = userId; 
                         logStatus(`Authenticated: User ID ${userId.substring(0, 8)}...`);
                         
                         // Set up Firestore references and listeners
@@ -284,7 +288,7 @@
             player = new YT.Player('player', {
                 height: '390',
                 width: '640',
-                videoId: 'MF58C9JJhJk', // Default video ID (The Art of War Audiobook)
+                videoId: 'MF58C9JJhJk', // <-- NEW VIDEO ID IS SET HERE
                 playerVars: {
                     'controls': 0, // Custom controls
                     'disablekb': 1, // Disable keyboard controls
@@ -389,17 +393,17 @@
         Synchronized Audiobook Player
     </h1>
 
-    <div class="player-container mb-6">
-        <div id="player"></div>
-    </div>
-
     <div id="messageBox">
         <!-- Error/Success messages will appear here -->
+    </div>
+
+    <div class="player-container mb-6">
+        <div id="player"></div>
     </div>
     
     <div class="mb-6">
         <p id="statusText" class="text-gray-500 font-medium">Initializing...</p>
-        <p class="text-gray-500 text-sm">Your ID (first 8 chars): <span id="userIdDisplay" class="font-mono bg-gray-100 px-1 rounded">Loading...</span></p>
+        <p class="text-gray-500 text-sm">Your ID (full string): <span id="userIdDisplay" class="font-mono bg-gray-100 px-1 rounded">Loading...</span></p>
     </div>
 
     <!-- New Readiness and Sync Controls -->
@@ -439,7 +443,7 @@
 
     <div class="mt-6 pt-4 border-t">
         <h2 class="text-xl font-bold text-gray-700 mb-3">Video Link</h2>
-        <p class="text-sm text-gray-600">The current video is "The Art of War" Audiobook (ID: MF58C9JJhJk).</p>
+        <p class="text-sm text-gray-600">The current video ID is: <span class="font-mono bg-gray-100 px-1 rounded">MF58C9JJhJk</span>.</p>
     </div>
 
     <footer class="mt-8 text-center text-xs text-gray-400">
@@ -449,14 +453,3 @@
 
 </body>
 </html>
-<script>
-    // This script block is only for updating the User ID display in the HTML
-    // It runs once the auth object is available, but relies on a slight delay
-    // as the auth.currentUser might not be immediately available after the script execution context finishes.
-    setTimeout(() => {
-        const auth = window.auth; // Access the globally available auth object
-        if (auth && auth.currentUser) {
-            document.getElementById('userIdDisplay').textContent = auth.currentUser.uid;
-        }
-    }, 1500); // 1.5s delay to ensure auth state is likely processed
-</script>
