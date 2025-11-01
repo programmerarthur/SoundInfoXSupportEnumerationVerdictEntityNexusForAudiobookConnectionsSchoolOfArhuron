@@ -194,11 +194,17 @@
     const configToUse = firebaseConfig || EXTERNAL_FIREBASE_CONFIG;
     
     let app, db, auth, userId, player;
-    let playerStateRef, usersRef, currentUserRef;
+    let playerStateRef, usersReadyRef, usersPresenceRef, currentUserReadyRef, currentUserPresenceRef;
 
     let isReady = false; 
     const READY_THRESHOLD_PERCENTAGE = 0.5; 
-    const INACTIVITY_TIMEOUT_MS = 15000; 
+    // Reduced inactivity timeout slightly to ensure quick user counting
+    const INACTIVITY_TIMEOUT_MS = 10000; 
+    
+    // Synchronization state flags to prevent race conditions
+    let isRemoteUpdate = false;
+    const REMOTE_UPDATE_WINDOW_MS = 500; // Time window (0.5s) to suppress local sync after a remote action
+    const SYNC_TOLERANCE_SECONDS = 0.5; // Tolerance for seeking
 
     // --- Utility Functions ---
     function getElement(id) {
@@ -300,21 +306,27 @@
         const playerStateDocPath = `artifacts/${appId}/public/data/audiobook_player_state/state`;
         playerStateRef = doc(db, playerStateDocPath);
 
-        const usersCollectionPath = `artifacts/${appId}/public/data/audiobook_users`;
-        usersRef = collection(db, usersCollectionPath);
-        
-        currentUserRef = doc(db, usersCollectionPath, auth.currentUser.uid);
+        // Separate collections for readiness (sparse updates) and presence (frequent updates)
+        const usersReadyCollectionPath = `artifacts/${appId}/public/data/audiobook_users_ready`;
+        usersReadyRef = collection(db, usersReadyCollectionPath);
+        currentUserReadyRef = doc(db, usersReadyCollectionPath, auth.currentUser.uid);
+
+        const usersPresenceCollectionPath = `artifacts/${appId}/public/data/audiobook_users_presence`;
+        usersPresenceRef = collection(db, usersPresenceCollectionPath);
+        // Using a distinct ID for presence to avoid conflicts with readiness updates
+        currentUserPresenceRef = doc(db, usersPresenceCollectionPath, auth.currentUser.uid + "_presence"); 
     }
 
     // --- User Presence and Readiness ---
 
-    /** Updates the current user's lastSeen timestamp and isReady status. */
+    /** Updates the current user's lastSeen timestamp. */
     function monitorUserPresence() {
         const updatePresence = () => {
-            if (!currentUserRef) return; 
-            setDoc(currentUserRef, {
-                isReady: isReady,
-                lastSeen: serverTimestamp()
+            if (!currentUserPresenceRef) return; 
+            // Only update the lastSeen timestamp in the dedicated presence collection
+            setDoc(currentUserPresenceRef, {
+                lastSeen: serverTimestamp(),
+                userId: auth.currentUser.uid
             }, { merge: true })
             .catch(err => console.error("Error updating user presence:", err));
         };
@@ -327,62 +339,65 @@
     function listenToReadyStatus() {
         const cutoff = new Date(Date.now() - INACTIVITY_TIMEOUT_MS);
         
-        onSnapshot(usersRef, (snapshot) => {
-            let readyCount = 0;
-            let totalActiveUsers = 0;
-            const currentUserId = auth.currentUser ? auth.currentUser.uid : null;
-            
-            snapshot.forEach(userDoc => {
+        // Listener for READY status (isReady)
+        onSnapshot(usersReadyRef, (readySnapshot) => {
+            let readyUsers = {};
+            readySnapshot.forEach(userDoc => {
                 const data = userDoc.data();
-                let isUserActive = false;
-                
-                // 1. Check if the user has been seen recently
-                if (data.lastSeen) {
-                    const lastSeenMs = data.lastSeen.toMillis();
-                    if (lastSeenMs >= cutoff.getTime()) {
-                        isUserActive = true;
-                    }
-                } 
-                // 2. If no timestamp, count the current user to ensure 1/1 visibility
-                else if (userDoc.id === currentUserId) {
-                    isUserActive = true; 
-                }
-
-                if (isUserActive) {
-                    totalActiveUsers++;
-                    if (data.isReady) {
-                        readyCount++;
-                    }
+                if (data.isReady) {
+                    readyUsers[userDoc.id] = true;
                 }
             });
             
-            const requiredReadyCount = Math.ceil(totalActiveUsers * READY_THRESHOLD_PERCENTAGE);
-            
-            // Update the ready status display
-            getElement('readyStatus').textContent = `Ready: ${readyCount} / ${totalActiveUsers}`;
+            // Listener for ACTIVE status (lastSeen)
+            onSnapshot(usersPresenceRef, (presenceSnapshot) => {
+                let readyCount = 0;
+                let totalActiveUsers = 0;
+                
+                presenceSnapshot.forEach(presenceDoc => {
+                    const data = presenceDoc.data();
+                    
+                    // Check if the user is active based on the lastSeen timestamp
+                    if (data.lastSeen) {
+                        const lastSeenMs = data.lastSeen.toMillis();
+                        if (lastSeenMs >= cutoff.getTime()) {
+                            totalActiveUsers++;
+                            // Check the separate ready status
+                            if (readyUsers[data.userId]) {
+                                readyCount++;
+                            }
+                        }
+                    } 
+                });
+                
+                const requiredReadyCount = Math.ceil(totalActiveUsers * READY_THRESHOLD_PERCENTAGE);
+                
+                // Update the ready status display
+                getElement('readyStatus').textContent = `Ready: ${readyCount} / ${totalActiveUsers}`;
 
-            // --- STRICT READY-START LOGIC ---
-            if (totalActiveUsers > 0 && readyCount >= requiredReadyCount) {
-                // If the ready threshold is met, send the PLAY signal
-                if (player && player.getPlayerState() !== YT.PlayerState.PLAYING) { 
-                    logStatus(`Ready threshold met: Initiating video playback!`);
-                    // Send the PLAY signal
-                    syncPlayerState(true, player.getCurrentTime() || 0); 
-                }
-            } else {
-                const needed = Math.max(0, requiredReadyCount - readyCount);
-                if (totalActiveUsers > 0) {
-                    logStatus(`Waiting for ${needed} more user(s) to be ready... (${Math.ceil(READY_THRESHOLD_PERCENTAGE * 100)}% required)`);
+                // --- STRICT READY-START LOGIC ---
+                if (totalActiveUsers > 0 && readyCount >= requiredReadyCount) {
+                    // If the ready threshold is met, send the PLAY signal
+                    if (player && player.getPlayerState() !== YT.PlayerState.PLAYING) { 
+                        logStatus(`Ready threshold met: Initiating video playback!`);
+                        // Send the PLAY signal
+                        syncPlayerState(true, player.getCurrentTime() || 0); 
+                    }
                 } else {
-                    logStatus(`Waiting for users to connect...`);
+                    const needed = Math.max(0, requiredReadyCount - readyCount);
+                    if (totalActiveUsers > 0) {
+                        logStatus(`Waiting for ${needed} more user(s) to be ready... (${Math.ceil(READY_THRESHOLD_PERCENTAGE * 100)}% required)`);
+                    } else {
+                        logStatus(`Waiting for users to connect...`);
+                    }
                 }
-            }
+            });
         });
     }
 
     /** Toggles the current user's local and remote readiness status. */
     function toggleReady() {
-        if (!currentUserRef) {
+        if (!currentUserReadyRef) {
             logError("Authentication not complete. Cannot set ready status.");
             return;
         }
@@ -399,7 +414,8 @@
             readyBtn.classList.add('bg-green-500', 'hover:bg-green-600', 'dark:hover:bg-green-700');
         }
         
-        setDoc(currentUserRef, { isReady: isReady }, { merge: true })
+        // Only update the isReady status in the dedicated ready collection
+        setDoc(currentUserReadyRef, { isReady: isReady, userId: auth.currentUser.uid }, { merge: true })
             .catch(err => logError("Failed to update ready status:", err));
     }
 
@@ -435,6 +451,11 @@
                 const playerState = player.getPlayerState();
                 const localTime = player.getCurrentTime();
                 
+                // Set the remote update flag to suppress the local onStateChange event
+                isRemoteUpdate = true;
+                setTimeout(() => { isRemoteUpdate = false; }, REMOTE_UPDATE_WINDOW_MS);
+
+
                 // Handle Play/Pause
                 if (data.isPlaying) {
                     if (player.playVideo && playerState !== YT.PlayerState.PLAYING && playerState !== YT.PlayerState.BUFFERING) {
@@ -448,8 +469,8 @@
                     }
                 }
 
-                // Seek synchronization (Tolerance for drift: 1 second)
-                if (player.seekTo && Math.abs(localTime - data.currentTime) > 1.0) {
+                // Seek synchronization (Tolerance for drift)
+                if (player.seekTo && Math.abs(localTime - data.currentTime) > SYNC_TOLERANCE_SECONDS) {
                     player.seekTo(data.currentTime, true);
                     logStatus(`Remote signal: Seeking to ${data.currentTime.toFixed(2)}s.`);
                 }
@@ -497,20 +518,30 @@
     }
 
     /** * Handles state changes from the local player (e.g., user clicked play/pause on the video frame).
-     * This now sends a sync signal ONLY if the state is Play or Pause.
-     * The auto-start logic is strictly handled by listenToReadyStatus.
+     * This now sends a sync signal ONLY if the state is Play or Pause AND it was NOT triggered by a remote update.
      */
     function onPlayerStateChange(event) {
-        if (!auth || !auth.currentUser) return; 
+        if (!auth || !auth.currentUser || isRemoteUpdate) {
+            // Ignore if not authenticated or if the change was caused by a remote Firestore update
+            return; 
+        }
         
         const currentTime = player.getCurrentTime();
         const isPlaying = event.data === YT.PlayerState.PLAYING;
         const isPaused = event.data === YT.PlayerState.PAUSED;
+        const isBuffering = event.data === YT.PlayerState.BUFFERING;
+        const isStopped = event.data === YT.PlayerState.ENDED;
 
-        // Only sync if the state is explicitly PLAYING or PAUSED due to a user interaction
+
+        // Only sync if the state is explicitly PLAYING or PAUSED due to a local user interaction
         if (isPlaying || isPaused) {
             syncPlayerState(isPlaying, currentTime);
+        } else if (isStopped) {
+            // Automatically sync pause state when video ends
+             syncPlayerState(false, currentTime);
         }
+        
+        // We ignore buffering and unstarted states to prevent unnecessary sync spam.
     }
 
     // --- Global Helpers for Manual Button Actions ---
@@ -545,7 +576,11 @@
             logStatus("Player API is not fully ready for seeking (Reset failed).", true);
             return;
         }
+        // Set remote update flag before local action that might trigger onStateChange
+        isRemoteUpdate = true;
         player.seekTo(0, true); 
+        setTimeout(() => { isRemoteUpdate = false; }, REMOTE_UPDATE_WINDOW_MS);
+        
         syncPlayerState(false, 0);
         logStatus("Video reset to 0:00 and paused.");
     }
