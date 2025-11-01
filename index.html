@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Synchronized YouTube Audiobook Player</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0d1117;
+            color: #c9d1d9;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .container {
+            width: 100%;
+            max-width: 600px;
+            background-color: #161b22;
+            padding: 2rem;
+            border-radius: 1rem;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            border: 1px solid #30363d;
+        }
+        /* Style the YouTube container for responsiveness */
+        #player-container {
+            position: relative;
+            width: 100%;
+            padding-bottom: 56.25%; /* 16:9 Aspect Ratio */
+            margin-bottom: 1.5rem;
+            border-radius: 0.5rem;
+            overflow: hidden;
+        }
+        #youtubePlayer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+        .audio-player-controls {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            margin-top: 1.5rem;
+        }
+        .player-button {
+            padding: 0.75rem 1.5rem;
+            font-weight: 700;
+            border-radius: 0.5rem;
+            transition: all 0.2s;
+            cursor: pointer;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
+            font-size: 1rem;
+        }
+        .play-button {
+            background-color: #238636; /* GitHub green */
+            color: #ffffff;
+        }
+        .play-button:hover:not(:disabled) {
+            background-color: #2ea043;
+            transform: translateY(-2px);
+        }
+        .play-button:disabled {
+            background-color: #238636;
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .pause-button {
+            background-color: #ffaa00; /* Yellow/Orange */
+            color: #161b22;
+        }
+        .pause-button:hover {
+            background-color: #fce83a;
+            transform: translateY(-2px);
+        }
+        .ready-button {
+            background-color: #58a6ff; /* GitHub Blue */
+            color: #161b22;
+        }
+        .ready-button:hover:not(:disabled) {
+            background-color: #79c0ff;
+            transform: translateY(-2px);
+        }
+        .ready-button:disabled {
+            background-color: #58a6ff;
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .seek-slider {
+            flex-grow: 1;
+            height: 8px;
+            -webkit-appearance: none;
+            appearance: none;
+            background: #30363d;
+            border-radius: 4px;
+            cursor: pointer;
+            outline: none;
+        }
+        .seek-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: #58a6ff; /* GitHub Blue */
+            cursor: pointer;
+            box-shadow: 0 0 5px rgba(88, 166, 255, 0.5);
+        }
+        .seek-slider::-moz-range-thumb {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: #58a6ff;
+            cursor: pointer;
+        }
+        .spinner {
+            border: 4px solid rgba(255, 255, 255, 0.1);
+            border-left-color: #58a6ff;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+    <!-- YouTube IFrame Player API -->
+    <script>
+      var tag = document.createElement('script');
+      tag.src = "https://www.youtube.com/iframe_api";
+      var firstScriptTag = document.getElementsByTagName('script')[0];
+      firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
+    </script>
+    
+    <!-- Firebase Imports and Logic -->
+    <script type="module">
+        import { initializeApp as fbInitializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth as fbGetAuth, signInAnonymously as fbSignInAnonymously, signInWithCustomToken as fbSignInWithCustomToken, onAuthStateChanged as fbOnAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore as fbGetFirestore, doc as fbDoc, setDoc as fbSetDoc, onSnapshot as fbOnSnapshot, getDoc as fbGetDoc, updateDoc as fbUpdateDoc, setLogLevel as fbSetLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global variables provided by the environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // YouTube Video ID (Placeholder for an audiobook clip)
+        const YOUTUBE_VIDEO_ID = 'MF58C9JJhJk'; 
+
+        // Initialize Firebase and Global Variables
+        const app = fbInitializeApp(firebaseConfig);
+        const db = fbGetFirestore(app);
+        const auth = fbGetAuth(app);
+        fbSetLogLevel('Debug'); // Enable Firestore logging
+
+        let userId = null;
+        let player = null; // YouTube Player Object
+        let isSyncing = false; // Flag to prevent infinite loop during seeking/updating
+        let isUserAction = false; // Flag to indicate if the change came from this user's button press
+        let playerStatusRef = null;
+        let playerDuration = 0;
+        let checkInterval = null; // Interval for constant time updates
+
+        // YouTube Player State Constants
+        const YT_PAUSED = 2;
+        const YT_PLAYING = 1;
+
+        // --- Core Synchronization Logic ---
+
+        /**
+         * Converts seconds to MM:SS format.
+         */
+        function formatTime(seconds) {
+            if (isNaN(seconds) || seconds < 0) return "--:--";
+            const minutes = Math.floor(seconds / 60);
+            const remainingSeconds = Math.floor(seconds % 60);
+            return `${minutes.toString().padStart(2, '0')}:${remainingSeconds.toString().padStart(2, '0')}`;
+        }
+
+        /**
+         * Constantly updates the local UI and pushes updates if user is playing.
+         */
+        function checkPlaybackTime() {
+            if (!player) return;
+            
+            const currentTime = player.getCurrentTime();
+            
+            // 1. Update local UI time constantly
+            document.getElementById('currentLocalTime').textContent = formatTime(currentTime);
+
+            // 2. Synchronization Check (when playing)
+            if (player.getPlayerState() === YT_PLAYING && !isSyncing && !isUserAction) {
+                // Keep slider value updated locally
+                document.getElementById('seekBar').value = currentTime;
+            }
+        }
+        
+        /**
+         * Handles the real-time updates from Firestore to synchronize the local player.
+         * @param {object} state The state object fetched from Firestore.
+         */
+        function synchronizePlayer(state) {
+            playerState = state;
+            
+            // --- READY STATE LOGIC ---
+            const readyCount = state.readyUsers ? Object.keys(state.readyUsers).length : 0;
+            document.getElementById('readyCount').textContent = readyCount;
+            
+            if (!state.sessionActive) {
+                // Session is not active, show the READY UI
+                document.getElementById('readyContainer').classList.remove('hidden');
+                document.getElementById('audioPlayerContainer').classList.add('hidden');
+                
+                // Enable Play button if current user is ready (or if we are the only one)
+                const isReady = state.readyUsers && state.readyUsers[userId];
+                
+                document.getElementById('readyBtn').disabled = isReady;
+                document.getElementById('readyBtn').textContent = isReady ? 'Ready!' : 'I\'m Ready';
+
+                const startButton = document.getElementById('sessionStartBtn');
+                if (isReady) {
+                    startButton.disabled = false;
+                    startButton.textContent = 'Start Listening';
+                } else {
+                    startButton.disabled = true;
+                    startButton.textContent = 'Wait for Ready Signal...';
+                }
+
+                return; // Stop sync logic if session is not active
+            } 
+            
+            // Session is active, show the PLAYER UI
+            document.getElementById('readyContainer').classList.add('hidden');
+            document.getElementById('audioPlayerContainer').classList.remove('hidden');
+            // --- END READY STATE LOGIC ---
+
+            
+            // If the change originated from this client's button press, skip sync for a moment.
+            if (isUserAction) {
+                isUserAction = false; 
+                return;
+            }
+
+            isSyncing = true; // Set flag before making changes
+
+            const slider = document.getElementById('seekBar');
+            const playPauseBtn = document.getElementById('playPauseBtn');
+
+            // 1. Calculate expected playback time
+            const timeSinceLastUpdate = (Date.now() / 1000) - state.lastUpdatedTime;
+            let expectedTime = state.isPlaying ? state.currentTime + timeSinceLastUpdate : state.currentTime;
+            
+            // Clamp time to bounds
+            expectedTime = Math.max(0, Math.min(expectedTime, playerDuration));
+
+            const currentLocalTime = player.getCurrentTime();
+            const drift = Math.abs(currentLocalTime - expectedTime);
+            
+            // 2. Handle Play/Pause State
+            if (state.isPlaying) {
+                if (player.getPlayerState() !== YT_PLAYING || drift > 0.5) {
+                    player.seekTo(expectedTime, true);
+                    player.playVideo();
+                }
+                playPauseBtn.textContent = 'Pause';
+                playPauseBtn.className = playPauseBtn.className.replace('play-button', 'pause-button');
+            } else {
+                if (player.getPlayerState() !== YT_PAUSED) {
+                    player.pauseVideo();
+                }
+                // Always seek to the exact paused position
+                if (drift > 0.2 || player.getPlayerState() === YT_PLAYING) { 
+                   player.seekTo(state.currentTime, true);
+                }
+
+                playPauseBtn.textContent = 'Play';
+                playPauseBtn.className = playPauseBtn.className.replace('pause-button', 'play-button');
+            }
+
+            // 3. Update UI
+            slider.value = expectedTime;
+            document.getElementById('audioStatus').textContent = state.isPlaying ? 'Playing (Synced)' : 'Paused (Synced)';
+            document.getElementById('currentGlobalTime').textContent = formatTime(expectedTime);
+
+
+            isSyncing = false; // Clear flag
+        }
+
+        /**
+         * Updates the global player state in Firestore (for Play/Pause/Seek actions).
+         * @param {boolean} isPlaying The new playing state.
+         * @param {number} currentTime The current time of the player.
+         */
+        async function updateGlobalState(isPlaying, currentTime) {
+            const now = Date.now() / 1000; // Unix time in seconds
+
+            const updateData = {
+                isPlaying: isPlaying,
+                currentTime: currentTime,
+                lastUpdatedTime: now,
+                updatedBy: userId,
+            };
+
+            try {
+                isUserAction = true;
+                await fbUpdateDoc(playerStatusRef, updateData);
+                console.log(`State updated by ${userId}: isPlaying=${isPlaying}, time=${currentTime.toFixed(2)}`);
+            } catch (error) {
+                console.error("Error writing document: ", error);
+            } finally {
+                 setTimeout(() => { isUserAction = false; }, 500);
+            }
+        }
+        
+        /**
+         * Sets up the initial state and the real-time listener for the player status.
+         */
+        function setupFirestoreListener() {
+            playerStatusRef = fbDoc(db, 'artifacts', appId, 'public', 'data', 'audiobook-sync', 'player-status');
+            
+            // Check if the document exists and initialize it if not
+            fbGetDoc(playerStatusRef).then(docSnap => {
+                if (!docSnap.exists()) {
+                    // Initialize state with readiness flags and session control
+                    fbSetDoc(playerStatusRef, {
+                        isPlaying: false,
+                        currentTime: 0,
+                        lastUpdatedTime: Date.now() / 1000,
+                        updatedBy: 'system',
+                        sessionActive: false, // New flag: false means we are in the 'Ready' phase
+                        readyUsers: {} // New map: stores users who are ready
+                    });
+                }
+            }).catch(e => console.error("Error checking initial state:", e));
+
+
+            // Listen for real-time changes
+            fbOnSnapshot(playerStatusRef, (doc) => {
+                if (doc.exists() && player && !isUserAction) {
+                    const state = doc.data();
+                    synchronizePlayer(state);
+                }
+            }, (error) => {
+                console.error("Error listening to player status: ", error);
+            });
+        }
+
+        // --- NEW READY BUTTON HANDLERS ---
+        
+        async function handleReadyClick() {
+            if (!userId) return;
+
+            try {
+                // Register the current user as ready
+                isUserAction = true;
+                await fbUpdateDoc(playerStatusRef, {
+                    [`readyUsers.${userId}`]: true // Simply set the user's ID as a key
+                });
+                console.log(`User ${userId} set to Ready.`);
+            } catch (error) {
+                console.error("Error setting ready status: ", error);
+            } finally {
+                setTimeout(() => { isUserAction = false; }, 500);
+            }
+        }
+        
+        async function handleSessionStart() {
+            // This function is only called when the user is already ready.
+            try {
+                isUserAction = true;
+                
+                // 1. Set the session to active
+                // 2. Clear the readyUsers map (it's no longer needed once the session starts)
+                // 3. Set initial playback state (playing from 0)
+                await fbSetDoc(playerStatusRef, {
+                    isPlaying: true,
+                    currentTime: 0,
+                    lastUpdatedTime: Date.now() / 1000,
+                    updatedBy: userId,
+                    sessionActive: true, 
+                    readyUsers: {},
+                });
+                console.log("Session started!");
+            } catch (error) {
+                 console.error("Error starting session: ", error);
+            } finally {
+                setTimeout(() => { isUserAction = false; }, 500);
+            }
+        }
+        
+        // --- YouTube Player Handlers ---
+
+        window.onYouTubeIframeAPIReady = function() {
+            document.getElementById('statusMessage').textContent = 'YouTube API ready. Loading video...';
+            player = new YT.Player('youtubePlayer', {
+                videoId: YOUTUBE_VIDEO_ID,
+                playerVars: {
+                    'controls': 0, // Hide native controls
+                    'disablekb': 1, // Disable keyboard controls
+                    'modestbranding': 1,
+                    'rel': 0,
+                    'showinfo': 0,
+                },
+                events: {
+                    'onReady': onPlayerReady,
+                    'onStateChange': onPlayerStateChange
+                }
+            });
+        }
+
+        function onPlayerReady(event) {
+            playerDuration = event.target.getDuration();
+            const slider = document.getElementById('seekBar');
+            slider.max = playerDuration;
+            
+            document.getElementById('audioDuration').textContent = formatTime(playerDuration);
+            document.getElementById('loadingIndicator').classList.add('hidden');
+            document.getElementById('controlsContainer').classList.remove('hidden');
+
+            // Initialize UI with duration and start sync listener
+            setupFirestoreListener();
+            
+            // Start the interval check for time update
+            checkInterval = setInterval(checkPlaybackTime, 250); 
+        }
+
+        function onPlayerStateChange(event) {
+            if (isSyncing) return;
+            
+            const state = event.data;
+            const currentTime = player.getCurrentTime();
+            
+            // Only update global state if the session is active
+            if (playerState.sessionActive) {
+                if (state === YT.PlayerState.PLAYING) {
+                    updateGlobalState(true, currentTime);
+                } else if (state === YT.PlayerState.PAUSED || state === YT.PlayerState.ENDED) {
+                    updateGlobalState(false, currentTime);
+                }
+            }
+        }
+        
+        // --- UI and Event Handlers ---
+
+        
+        // This function handles the user pressing the Play/Pause button
+        async function handlePlayPauseClick() {
+            // Check if session is active before allowing play/pause
+            if (!playerState.sessionActive) return; 
+
+            const state = player.getPlayerState();
+            const currentTime = player.getCurrentTime();
+            
+            if (state === YT_PAUSED || state === -1) { 
+                player.playVideo();
+                await updateGlobalState(true, currentTime);
+            } else if (state === YT_PLAYING) {
+                player.pauseVideo();
+                await updateGlobalState(false, currentTime);
+            }
+        }
+
+        // This function handles the user seeking the audio manually
+        async function handleSeekInput(event) {
+             // Check if session is active before allowing seek
+            if (!player || !playerState.sessionActive) return;
+            
+            const newTime = parseFloat(event.target.value);
+            
+            player.seekTo(newTime, true);
+
+            const state = player.getPlayerState();
+            const isPlaying = state === YT_PLAYING;
+            
+            await updateGlobalState(isPlaying, newTime);
+        }
+        
+        // Initial setup function
+        async function initializeApp() {
+            try {
+                if (initialAuthToken) {
+                    await fbSignInWithCustomToken(auth, initialAuthToken);
+                } else {
+                    await fbSignInAnonymously(auth);
+                }
+                
+                fbOnAuthStateChanged(auth, (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        document.getElementById('userIdDisplay').textContent = `Your ID: ${userId.substring(0, 8)}...`;
+
+                        // 2. Attach Event Listeners (Must happen after auth)
+                        document.getElementById('playPauseBtn').addEventListener('click', handlePlayPauseClick);
+                        document.getElementById('seekBar').addEventListener('change', handleSeekInput); 
+                        document.getElementById('seekBar').addEventListener('mouseup', handleSeekInput);
+                        
+                        // NEW Ready Listeners
+                        document.getElementById('readyBtn').addEventListener('click', handleReadyClick);
+                        document.getElementById('sessionStartBtn').addEventListener('click', handleSessionStart);
+
+                    } else {
+                        document.getElementById('statusMessage').textContent = 'Authentication Failed.';
+                    }
+                });
+            } catch (error) {
+                console.error("Firebase Auth Error:", error);
+                document.getElementById('statusMessage').textContent = 'Error connecting to Firebase.';
+            }
+        }
+
+        window.onload = initializeApp;
+
+    </script>
+</head>
+<body>
+    <div class="container">
+        <h1 class="text-3xl font-bold mb-4 text-center text-white">Synchronized YouTube Audiobook Room</h1>
+        <p class="text-gray-400 mb-6 text-center">One press controls all players across the website.</p>
+
+        <div id="loadingIndicator" class="flex flex-col items-center justify-center p-8">
+            <div class="spinner mb-4"></div>
+            <p id="statusMessage" class="text-gray-400">Connecting and authenticating...</p>
+        </div>
+        
+        <div id="controlsContainer" class="hidden">
+
+            <div id="player-container">
+                <!-- YouTube player will be injected here -->
+                <div id="youtubePlayer"></div>
+            </div>
+
+            <div class="bg-[#1f242c] p-4 rounded-lg border border-[#30363d] mb-4">
+                <p class="text-sm font-semibold mb-1">Content: Full Audiobook Video (ID: MF58C9JJhJk)</p>
+                <p class="text-xs text-green-400" id="userIdDisplay">Your ID: Waiting for Auth...</p>
+            </div>
+
+            <!-- NEW READY SESSION CONTAINER -->
+            <div id="readyContainer" class="p-8 text-center border-2 border-dashed border-gray-600 rounded-lg mb-6">
+                <p class="text-xl font-bold mb-4 text-yellow-400">Waiting for Session Start</p>
+                <p class="text-sm text-gray-400 mb-4">Ready Users: <span id="readyCount" class="font-bold text-lg text-white">0</span></p>
+
+                <div class="flex flex-col sm:flex-row gap-4 justify-center">
+                    <button id="readyBtn" class="player-button ready-button">
+                        I'm Ready
+                    </button>
+                    <button id="sessionStartBtn" class="player-button play-button" disabled>
+                        Wait for Ready Signal...
+                    </button>
+                </div>
+            </div>
+            <!-- END NEW READY SESSION CONTAINER -->
+            
+            <div id="audioPlayerContainer" class="hidden">
+                <div class="text-sm flex justify-between mb-2">
+                    <span id="currentGlobalTime" class="font-mono text-blue-400">00:00</span>
+                    <span id="audioDuration" class="font-mono text-gray-400">--:--</span>
+                </div>
+
+                <input type="range" id="seekBar" min="0" value="0" step="0.1" class="seek-slider w-full">
+
+                <div class="audio-player-controls">
+                    <button id="playPauseBtn" class="player-button play-button">
+                        Play
+                    </button>
+                    <div class="flex-grow text-center">
+                        <p id="audioStatus" class="text-sm font-bold text-yellow-400">Ready</p>
+                        <p class="text-xs text-gray-500">Local Time: <span id="currentLocalTime" class="font-mono">00:00</span></p>
+                    </div>
+                </div>
+            </div>
+
+            <p class="mt-6 text-sm text-gray-400 border-t border-[#30363d] pt-4">
+                *Note: This player is synchronized across all users and uses Firebase Firestore for state management.
+            </p>
+        </div>
+    </div>
+</body>
+</html>
